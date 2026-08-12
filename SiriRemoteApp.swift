@@ -1,6 +1,6 @@
 //
 //  SiriRemoteApp.swift
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Menu bar application for controlling Mac with Siri Remote
 //
@@ -20,7 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var touchHandler: TouchHandler?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🚀 HyperVibe starting...")
+        print("🚀 AppleTVremoteRebinder starting...")
 
         // Bluetooth AVRCP play/pause signals bypass cghidEventTap and reach com.apple.rcd
         // directly, which launches Music.app. Suspend rcd for this session; restored on exit.
@@ -163,7 +163,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 /// Suspends `com.apple.rcd` (Remote Control Daemon) for the user's GUI launchd domain while
-/// HyperVibe is running. rcd is what reacts to Bluetooth AVRCP play signals by launching
+/// AppleTVremoteRebinder is running. rcd is what reacts to Bluetooth AVRCP play signals by launching
 /// Music.app — a channel that bypasses HID seize and the cghidEventTap entirely. `bootout`
 /// only affects this login session; restored on clean exit, and on next login either way.
 enum RCDControl {

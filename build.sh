@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Build script for HyperVibe
+# Build script for AppleTVremoteRebinder
 # Make sure Xcode Command Line Tools are installed: xcode-select --install
 
 set -e
 
-echo "Building HyperVibe..."
+echo "Building AppleTVremoteRebinder..."
 
 SWIFT_FILES=(
     "main.swift"
@@ -45,7 +45,7 @@ echo "Building for: $TARGET"
 swiftc \
     -sdk "$SDK_PATH" \
     -target "$TARGET" \
-    -o HyperVibe \
+    -o AppleTVremoteRebinder \
     "${SWIFT_FILES[@]}" \
     -import-objc-header SiriRemote-Bridging-Header.h \
     -F /System/Library/PrivateFrameworks \
@@ -64,7 +64,7 @@ if [ $? -eq 0 ]; then
     echo "  ./create_app_bundle.sh"
     echo ""
     echo "Or run directly with:"
-    echo "  ./HyperVibe"
+    echo "  ./AppleTVremoteRebinder"
 else
     echo ""
     echo "✗ Build failed!"

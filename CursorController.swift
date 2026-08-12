@@ -1,6 +1,6 @@
 //
 //  CursorController.swift
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Controls cursor movement and clicking using CGEvent
 //

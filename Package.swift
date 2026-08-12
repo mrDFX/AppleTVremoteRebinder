@@ -5,14 +5,14 @@
 import PackageDescription
 
 let package = Package(
-    name: "HyperVibe",
+    name: "AppleTVremoteRebinder",
     platforms: [.macOS(.v11)],
     products: [
-        .executable(name: "HyperVibe", targets: ["HyperVibe"])
+        .executable(name: "AppleTVremoteRebinder", targets: ["AppleTVremoteRebinder"])
     ],
     targets: [
         .executableTarget(
-            name: "HyperVibe",
+            name: "AppleTVremoteRebinder",
             path: ".",
             sources: [
                 "main.swift",
