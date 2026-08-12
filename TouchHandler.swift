@@ -1,6 +1,6 @@
 //
 //  TouchHandler.swift
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Handles Siri Remote trackpad input using Apple's private MultitouchSupport.framework
 //

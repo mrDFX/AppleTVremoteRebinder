@@ -1,6 +1,6 @@
 //
 //  MenuBarManager.swift
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Manages the menu bar icon and menu
 //
@@ -32,7 +32,7 @@ enum ButtonAction: String, CaseIterable {
     }
 }
 
-/// HID buttons whose driver emits both press (value=1) and release (value=0) — verified via /tmp/hypervibe.log.
+/// HID buttons whose driver emits both press (value=1) and release (value=0) — verified via /tmp/appletvremoterebinder.log.
 /// menu/tv/select are excluded: menu/tv are press-only on the Siri Remote, select is handled separately for click/drag.
 let holdCapableButtons: Set<String> = ["playPause", "volumeUp", "volumeDown", "siri"]
 

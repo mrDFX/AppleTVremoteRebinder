@@ -1,6 +1,6 @@
 //
 //  SiriRemote-Bridging-Header.h
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Bridging header to expose MultitouchSupport private framework to Swift
 //

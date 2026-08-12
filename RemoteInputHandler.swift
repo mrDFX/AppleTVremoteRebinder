@@ -1,6 +1,6 @@
 //
 //  RemoteInputHandler.swift
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Processes HID input events from Siri Remote
 //

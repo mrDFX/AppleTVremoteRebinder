@@ -1,6 +1,6 @@
 //
 //  main.swift
-//  HyperVibe
+//  AppleTVremoteRebinder
 //
 //  Application entry point
 //
