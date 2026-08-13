@@ -539,20 +539,21 @@ class MenuBarManager {
     }
     
     func updateRemoteStatus(_ status: RemoteStatus) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.remoteStatus = status
-            self.statusMenuItem.title = status.isConnected ? "Status: Connected ✓" : "Status: Disconnected"
-            if status.isConnected, let battery = status.batteryPercent {
-                self.batteryMenuItem.title = "Battery: \(battery)%"
-            } else if status.isConnected {
-                self.batteryMenuItem.title = "Battery: Unavailable"
-            } else {
-                self.batteryMenuItem.title = "Battery: —"
-            }
-            self.statusItem.button?.appearsDisabled = !status.isConnected
-            self.settingsWindowController?.updateRemoteStatus(status)
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in self?.updateRemoteStatus(status) }
+            return
         }
+        remoteStatus = status
+        statusMenuItem.title = status.isConnected ? "Status: Connected ✓" : "Status: Disconnected"
+        if status.isConnected, let battery = status.batteryPercent {
+            batteryMenuItem.title = "Battery: \(battery)%"
+        } else if status.isConnected {
+            batteryMenuItem.title = "Battery: Unavailable"
+        } else {
+            batteryMenuItem.title = "Battery: —"
+        }
+        statusItem.button?.appearsDisabled = !status.isConnected
+        settingsWindowController?.updateRemoteStatus(status)
     }
     
     func getMapping(for button: String) -> AssignedAction {

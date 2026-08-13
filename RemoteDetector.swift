@@ -8,6 +8,7 @@
 import Foundation
 import IOKit
 import IOKit.hid
+import AppKit
 
 enum RemoteDetectorEvent {
     case interfaceAdded(IOHIDDevice, startsSession: Bool)
@@ -48,6 +49,7 @@ class RemoteDetector {
     private var coreBluetoothInFlight = false
     private var coreBluetoothLastAttemptAt: TimeInterval = 0
     private let coreBluetoothCooldown: TimeInterval = 90
+    private var wakeObserver: NSObjectProtocol?
 
     private let appleVendorID: Int = 0x004C
 
@@ -106,6 +108,52 @@ class RemoteDetector {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
             self?.enumerateAllDevices()
         }
+
+        installWakeObserver()
+    }
+
+    private func installWakeObserver() {
+        guard wakeObserver == nil else { return }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleSystemWake()
+        }
+    }
+
+    private func handleSystemWake() {
+        rmDebug("🛰 system wake — invalidating battery cache and pre-probing")
+        // Drop cached percent and cooldowns so the very first read after the
+        // remote reconnects goes through immediately instead of returning a
+        // stale value or being throttled.
+        coreBluetoothLastAttemptAt = 0
+        batteryProbe.invalidateCache()
+        coreBluetoothBattery.invalidateCache()
+        // Kick a CoreBluetooth probe now — the peripheral is often still
+        // GATT-visible before the HID interfaces re-enumerate, so the battery
+        // value can arrive together with (or before) the first "Connected".
+        if interfaceRegistry.isConnected {
+            requestCoreBluetoothBattery(force: true)
+        } else {
+            // Pre-warm: the CB reader can retrieve the last-known peripheral
+            // by identifier as soon as CoreBluetooth reports it back.
+            let hints = ["Siri Remote", "AppleTV Remote", "Apple TV Remote"]
+            coreBluetoothBattery.readBatteryPercent(
+                nameHints: hints,
+                knownIdentifier: lastKnownBluetoothPeripheralID,
+                force: true
+            ) { [weak self] percent in
+                guard let self, let percent else { return }
+                DispatchQueue.main.async {
+                    guard self.interfaceRegistry.isConnected else { return }
+                    self.lastBatteryPercent = percent
+                    self.lastBatterySampleUptime = ProcessInfo.processInfo.systemUptime
+                    self.publishStatus(forceBatteryRead: false)
+                }
+            }
+        }
     }
     
     func stopDetection() {
@@ -129,6 +177,10 @@ class RemoteDetector {
         lastBatteryPercent = nil
         lastBatterySampleUptime = 0
         lastPublishedStatus = .disconnected
+        if let observer = wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            wakeObserver = nil
+        }
         if shouldPublishStop { _ = eventCallback?(.stopped) }
     }
     
