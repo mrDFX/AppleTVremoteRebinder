@@ -22,6 +22,7 @@ SWIFT_FILES=(
     "RemoteLifecycle.swift"
     "RemoteBatteryReader.swift"
     "BluetoothBatteryProbe.swift"
+    "CoreBluetoothBatteryReader.swift"
     "RemoteNotifications.swift"
     "CursorController.swift"
     "MediaController.swift"
@@ -65,6 +66,7 @@ if swiftc \
     -framework Carbon \
     -framework AppKit \
     -framework UserNotifications \
+    -framework CoreBluetooth \
     -framework MultitouchSupport; then
     echo ""
     echo "✓ Build successful!"

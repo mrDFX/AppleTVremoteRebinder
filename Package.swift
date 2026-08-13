@@ -29,6 +29,7 @@ let package = Package(
                 "RemoteLifecycle.swift",
                 "RemoteBatteryReader.swift",
                 "BluetoothBatteryProbe.swift",
+                "CoreBluetoothBatteryReader.swift",
                 "RemoteNotifications.swift",
                 "CursorController.swift",
                 "MediaController.swift",
@@ -42,7 +43,8 @@ let package = Package(
                 .linkedFramework("AudioToolbox"),
                 .linkedFramework("Carbon"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("UserNotifications")
+                .linkedFramework("UserNotifications"),
+                .linkedFramework("CoreBluetooth")
             ]
         )
     ]

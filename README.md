@@ -1,12 +1,10 @@
-<img src="banner.png" alt="AppleTVremoteRebinder">
-
 # AppleTVremoteRebinder
 
-A native macOS menu-bar controller for the 1st-generation Siri Remote (A1513). It turns the remote into a configurable input for using a Mac as an HTPC / Apple-TV-style set-top box, with editable button profiles, trackpad tuning, media and app actions, and voice-input plumbing.
+A native macOS menu-bar controller for the Siri Remote. It turns the remote into a configurable input for using a Mac as an HTPC / Apple-TV-style set-top box, with editable button profiles, trackpad tuning, media and app actions, and voice-input plumbing.
 
 The product goal is to be at least as capable as Remote Buddy 2 for the Mac-as-Apple-TV use case, while keeping every mapping user-editable rather than hard-coded to a specific app.
 
-> **Status.** No pre-built binary is shipped — build the app bundle yourself (see [Building](#building)). Tested on the 1st-gen Siri Remote (A1513). The 2nd-gen A2540 click-ring directions and dedicated Mute button are not mapped yet.
+> **Status.** No pre-built binary is shipped — build the app bundle yourself (see [Building](#building)). Verified on macOS 15 with the 1st-gen Siri Remote (A1513, product `0x0266`) and the 2nd-gen A2540 (product `0x026D`). The A2540 click-ring directional presses and dedicated Mute button are not mapped yet. Battery availability depends on what macOS publishes for the specific remote/firmware — see [Remote status and battery](#remote-status-and-battery).
 
 ---
 
@@ -55,7 +53,18 @@ Physical click begins on button-down and completes at the anchored cursor positi
 
 ### Remote status and battery
 
-The menu bar and **Settings → General** show live connection state, active HID interface count, and the Siri Remote battery percentage when macOS exposes it. Battery reads use standard HID battery usages first, with the driver's `BatteryPercent` IORegistry property as a compatibility fallback. When the A1513 firmware/macOS combination does not publish either value, the UI reports **Battery: Unavailable** instead of inventing a percentage.
+The menu bar and **Settings → General** show live connection state, active HID interface count, and the Siri Remote battery percentage when macOS exposes it.
+
+Battery is read via a chain of sources, in order:
+
+1. HID `BatteryPercent` property on the device
+2. HID battery-usage elements (usage pages `0x06`, `0x0D`, `0x85`)
+3. IORegistry `BatteryPercent` on the HID service's ancestors and descendants
+4. Global scan of `AppleBluetoothHIDBattery` / `AppleDeviceManagementHIDEventService` matched by vendor/product/serial
+5. CoreBluetooth Battery Service (`0x180F` / char `0x2A19`) on the already-connected peripheral, matched by identifier or product name
+6. `system_profiler SPBluetoothDataType` cache as a last-resort fallback
+
+Different Siri Remote generations publish battery through different subsets of these paths, so the chain covers both A1513 and A2540 without hard-coding a model. When none of them return a value — e.g. some A2540 firmware combinations only expose battery to the internal Bluetooth daemon — the UI reports **Battery: Unavailable** instead of inventing a percentage.
 
 Connection/disconnection and low-battery notifications are independently configurable. Disconnect alerts wait briefly to absorb normal Bluetooth interface re-enumeration; low-battery alerts use hysteresis and a persisted cooldown to avoid repeated notifications.
 
