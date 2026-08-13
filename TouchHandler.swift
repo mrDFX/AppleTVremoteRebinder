@@ -58,8 +58,10 @@ class TouchHandler {
     private var lastTouchTime: UInt64 = 0
     private var touchStartTime: UInt64 = 0
     private var touchStartPosition: CGPoint = .zero
+    private var physicalClickRevisionAtTouchStart: UInt64 = 0
+    private var physicalClickOverlappedSession = false
     
-    private let cursorScale: CGFloat = 500.0
+    private let cursorScale: CGFloat = 420.0
     private let tapMaxDuration: Double = 0.22
     private let tapMaxDistance: CGFloat = 0.07
     // Swipe detection: velocity-gated single-finger flick. Distance > 35% of trackpad in < 350ms,
@@ -192,6 +194,7 @@ class TouchHandler {
         lastTouchPosition = nil
         lastTouchCount = 0
         hadMultipleFingersInSession = false
+        physicalClickOverlappedSession = false
     }
     
     private func startReconnectTimer() {
@@ -231,6 +234,7 @@ class TouchHandler {
         guard count > 0, let touchPtr = touches else {
             // Touch ended
             handleTouchEnd()
+            cursorController.resetMotionFilter()
             lastTouchPosition = nil
             lastTouchCount = 0
             return
@@ -271,11 +275,20 @@ class TouchHandler {
         // Handle touch start
         if lastTouchPosition == nil {
             hadMultipleFingersInSession = false
+            let click = cursorController.physicalClickSnapshot
+            physicalClickRevisionAtTouchStart = click.revision
+            physicalClickOverlappedSession = click.isActive
             touchStartTime = mach_absolute_time()
             touchStartPosition = currentPos
+            cursorController.resetMotionFilter()
             lastTouchPosition = currentPos
             lastTouchCount = activeTouchCount
             return
+        }
+
+        let click = cursorController.physicalClickSnapshot
+        if click.isActive || click.revision != physicalClickRevisionAtTouchStart {
+            physicalClickOverlappedSession = true
         }
         
         // Calculate delta
@@ -314,9 +327,13 @@ class TouchHandler {
     
     private func handleTouchEnd() {
         guard lastTouchPosition != nil else { return }
-        
-        // Don't trigger tap if physical click button is active
-        if cursorController.isClickActive {
+
+        let click = cursorController.physicalClickSnapshot
+        if click.isActive || click.revision != physicalClickRevisionAtTouchStart {
+            physicalClickOverlappedSession = true
+        }
+        // Suppress tap regardless of whether HID select-up or touch-up arrived first.
+        if physicalClickOverlappedSession {
             return
         }
         // Don't trigger tap after a multi-finger gesture (e.g. two-finger scroll)
@@ -350,9 +367,12 @@ class TouchHandler {
             }
         }
 
-        if Self.cursorEnabled && duration < tapMaxDuration && movement < tapMaxDistance {
+        if Self.cursorEnabled && TrackpadPreferences.tapToClick && duration < tapMaxDuration && movement < tapMaxDistance {
+            let clickRevision = cursorController.physicalClickSnapshot.revision
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
+                let currentClick = self.cursorController.physicalClickSnapshot
+                guard !currentClick.isActive, currentClick.revision == clickRevision else { return }
                 self.cursorController.performClick()
             }
         }
@@ -376,8 +396,9 @@ class TouchHandler {
     }
     
     private func performScroll(deltaX: CGFloat, deltaY: CGFloat) {
-        let scrollX = Int32(-deltaX * scrollScale)
-        let scrollY = Int32(deltaY * scrollScale)
+        let direction: CGFloat = TrackpadPreferences.naturalScroll ? 1.0 : -1.0
+        let scrollX = Int32(-deltaX * scrollScale * direction)
+        let scrollY = Int32(deltaY * scrollScale * direction)
         
         DispatchQueue.main.async { [weak self] in
             self?.cursorController.scroll(deltaX: scrollX, deltaY: scrollY)

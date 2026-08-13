@@ -18,13 +18,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var remoteInputHandler: RemoteInputHandler?
     private var mediaKeyInterceptor: MediaKeyInterceptor?
     private var touchHandler: TouchHandler?
+    private var profileStore: ProfileStore!
+    private var mediaController: MediaController!
+    private var actionExecutor: RemoteActionExecutor!
+    private var voiceInputController: VoiceInputController!
+    private var remoteNotificationController: RemoteNotificationController!
+    private var remoteStatus = RemoteStatus.disconnected
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         print("🚀 AppleTVremoteRebinder starting...")
 
+        profileStore = ProfileStore()
+        profileStore.onPreventMusicAutoLaunchChanged = { enabled in
+            if enabled {
+                RCDControl.suspend()
+            } else {
+                RCDControl.restore()
+            }
+        }
+
         // Bluetooth AVRCP play/pause signals bypass cghidEventTap and reach com.apple.rcd
-        // directly, which launches Music.app. Suspend rcd for this session; restored on exit.
-        RCDControl.suspend()
+        // directly, which launches Music.app. This protection is user-configurable.
+        if profileStore.preventAppleMusicAutoLaunch {
+            RCDControl.suspend()
+        }
 
         // Run as menu bar app (no dock icon)
         NSApp.setActivationPolicy(.accessory)
@@ -37,36 +54,76 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItem.isVisible = true
         
-        // Initialize menu bar manager
-        menuBarManager = MenuBarManager(statusItem: statusItem)
+        // Initialize menu bar manager and profile/action engine.
+        menuBarManager = MenuBarManager(statusItem: statusItem, profileStore: profileStore)
+        remoteNotificationController = RemoteNotificationController()
+        remoteNotificationController.start(currentStatus: remoteStatus)
+        menuBarManager.onNotificationPreferencesChanged = { [weak self] in
+            self?.remoteNotificationController.preferencesDidChange()
+        }
+        mediaController = MediaController()
+        menuBarManager.mediaController = mediaController
+        actionExecutor = RemoteActionExecutor(menuBarManager: menuBarManager, mediaController: mediaController)
+        voiceInputController = VoiceInputController()
+        actionExecutor.voiceController = voiceInputController
+        profileStore.onChange = { [weak self] in
+            DispatchQueue.main.async {
+                self?.menuBarManager?.profileDidChange()
+            }
+        }
         
         // Check accessibility permissions
         checkAccessibilityPermissions()
         
         // Initialize controllers
         let cursorController = CursorController()
+        actionExecutor.cursorController = cursorController
 
         remoteInputHandler = RemoteInputHandler(
             cursorController: cursorController,
-            menuBarManager: menuBarManager
+            menuBarManager: menuBarManager,
+            profileStore: profileStore,
+            actionExecutor: actionExecutor
         )
+        profileStore.onProfilesWillChange = { [weak self] in
+            self?.remoteInputHandler?.prepareForProfileChange()
+        }
         
         // Start touch handler for trackpad (before remote detection so we can wire the callback)
         touchHandler = TouchHandler(cursorController: cursorController)
         touchHandler?.scrollScale = menuBarManager.scrollSpeed.scale
-        touchHandler?.onSwipe = { [weak menuBarManager] direction in
-            menuBarManager?.executeSwipe(direction)
+        touchHandler?.onSwipe = { [weak self] direction in
+            guard let self, self.profileStore.storageWarning == nil else { return }
+            self.menuBarManager.executeSwipe(direction)
         }
         touchHandler?.start()
         remoteInputHandler?.onButtonActivity = { [weak self] in
             self?.touchHandler?.tryReconnectTrackpad()
+            self?.remoteDetector?.refreshBatteryIfNeeded()
         }
         
         // Start remote detection
-        remoteDetector = RemoteDetector { [weak self] device in
-            DispatchQueue.main.async {
-                self?.remoteInputHandler?.setRemoteDevice(device)
-                self?.menuBarManager.updateConnectionStatus(connected: device != nil)
+        remoteDetector = RemoteDetector { [weak self] event in
+            guard let self else { return false }
+            switch event {
+            case .interfaceAdded(let device, let startsSession):
+                return self.remoteInputHandler?.attachRemoteInterface(
+                    device,
+                    startsSession: startsSession
+                ) ?? false
+            case .interfaceRemoved(let device, let endsSession):
+                self.remoteInputHandler?.detachRemoteInterface(device, endsSession: endsSession)
+                return true
+            case .statusChanged(let status):
+                self.remoteStatus = status
+                self.menuBarManager.updateRemoteStatus(status)
+                self.remoteNotificationController.update(status)
+                return true
+            case .stopped:
+                self.remoteInputHandler?.disconnectAllRemoteInterfaces()
+                self.remoteStatus = .disconnected
+                self.menuBarManager.updateRemoteStatus(.disconnected)
+                return true
             }
         }
         remoteDetector?.startDetection()
@@ -85,6 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return self.handleInterceptedMediaKey(keyType)
         }
         mediaKeyInterceptor?.start()
+        voiceInputController.startIfConfigured()
     }
     
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -102,8 +160,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     private func cleanup() {
         touchHandler?.stop()
+        remoteNotificationController?.stop()
         remoteDetector?.stopDetection()
         mediaKeyInterceptor?.stop()
+        voiceInputController?.stopBridge()
         RCDControl.restore()
     }
     
@@ -168,6 +228,7 @@ enum RCDControl {
     private static var suspended = false
 
     static func suspend() {
+        guard !suspended else { return }
         let domain = "gui/\(getuid())"
         let service = "\(domain)/com.apple.rcd"
         guard isLoaded(service: service) else {

@@ -14,38 +14,42 @@ import AppKit
 class RemoteInputHandler {
     private let cursorController: CursorController
     private weak var menuBarManager: MenuBarManager?
+    private let profileStore: ProfileStore
+    private let actionExecutor: RemoteActionExecutor
     private var devices: [IOHIDDevice] = []
     
     /// Called on any button activity; use to trigger trackpad re-scan after remote wake.
     var onButtonActivity: (() -> Void)?
     
-    // First press after connection: do not perform action (sound already played at connect).
-    // Only swallowed within a short window of the connect — a press arriving later is a real
-    // user press (post-sleep reconnects used to eat one press here, worsening wake latency).
-    private var isFirstPressAfterConnection = false
-    private var connectionTime: UInt64 = 0
-    private let connectSwallowWindow: Double = 1.5
-
     /// Auto-repeat timers for hold-to-repeat actions (scroll/volume), keyed by button.
     private var repeatTimers: [String: Timer] = [:]
 
-    private static func secondsSince(_ startMach: UInt64) -> Double {
-        guard startMach > 0 else { return .infinity }
-        var info = mach_timebase_info_data_t(numer: 1, denom: 1)
-        mach_timebase_info(&info)
-        let delta = mach_absolute_time() &- startMach
-        return Double(delta) * Double(info.numer) / Double(info.denom) / 1_000_000_000.0
-    }
-    
+    // Multi-press state.
+    private var pendingSingle: [String: DispatchWorkItem] = [:]
+    private var pendingHold: [String: DispatchWorkItem] = [:]
+    private var holdTriggered: Set<String> = []
+    private var profileGeneration = 0
+    private var profilePressGeneration: [String: Int] = [:]
+    private var pressOnlySequenceGate = PressOnlySequenceGate()
+    private var pressOnlySequenceStart: [String: UInt64] = [:]
+    private var pressOnlyHoldFired: Set<String> = []
+
     // Click/drag state
-    private var isSelectPressed = false
-    private var selectPressTime: UInt64 = 0
-    private var isDragging = false
-    private let clickThreshold: Double = 0.25
+    private var physicalClickSession = PhysicalClickSession()
+    private var selectDragWorkItem: DispatchWorkItem?
+    private var clickThreshold: Double { InputTiming.dragThreshold }
     
     // Prevent double-processing with MediaKeyInterceptor
     static var lastProcessedButton: String?
     static var lastProcessedTime: UInt64 = 0
+
+    private static func elapsedSeconds(since start: UInt64) -> Double {
+        guard start > 0 else { return .infinity }
+        var info = mach_timebase_info_data_t(numer: 1, denom: 1)
+        mach_timebase_info(&info)
+        let delta = mach_absolute_time() &- start
+        return Double(delta) * Double(info.numer) / Double(info.denom) / 1_000_000_000.0
+    }
 
     /// Virtual keys currently held down, keyed by the HID button that initiated the hold.
     /// Captured at press time so release can fire the correct keyUp even if the user
@@ -57,25 +61,23 @@ class RemoteInputHandler {
     /// fires the callback N times. This collapses dup events to a single state transition.
     private var buttonState: [String: Bool] = [:]
     
-    init(cursorController: CursorController, menuBarManager: MenuBarManager) {
+    init(cursorController: CursorController,
+         menuBarManager: MenuBarManager,
+         profileStore: ProfileStore,
+         actionExecutor: RemoteActionExecutor) {
         self.cursorController = cursorController
         self.menuBarManager = menuBarManager
+        self.profileStore = profileStore
+        self.actionExecutor = actionExecutor
     }
     
-    func setRemoteDevice(_ device: IOHIDDevice?) {
-        guard let device = device else {
-            releaseAllHeldKeys()
-            for d in devices {
-                IOHIDDeviceRegisterInputValueCallback(d, nil, nil)
-                IOHIDDeviceUnscheduleFromRunLoop(d, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
-                IOHIDDeviceClose(d, IOOptionBits(kIOHIDOptionsTypeNone))
-            }
-            devices.removeAll()
-            isFirstPressAfterConnection = false
-            return
+    @discardableResult
+    func attachRemoteInterface(_ device: IOHIDDevice, startsSession: Bool) -> Bool {
+        if startsSession {
+            // A new physical session must never inherit stale devices, held keys, or mouse state.
+            disconnectAllRemoteInterfaces()
         }
-        
-        guard !devices.contains(where: { $0 == device }) else { return }
+        guard !devices.contains(where: { $0 == device }) else { return true }
         
         // Seize device to prevent system from handling events
         let openResult = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
@@ -87,18 +89,45 @@ class RemoteInputHandler {
             IOHIDDeviceRegisterInputValueCallback(device, inputValueCallback, Unmanaged.passUnretained(self).toOpaque())
             IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
             devices.append(device)
-            isFirstPressAfterConnection = true
-            connectionTime = mach_absolute_time()
+            return true
         } else {
             rmDebug(String(format: "⚠️ FAILED to seize HID device (IOReturn=0x%X) — opening unseized", openResult))
             if IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeNone)) == kIOReturnSuccess {
                 IOHIDDeviceRegisterInputValueCallback(device, inputValueCallback, Unmanaged.passUnretained(self).toOpaque())
                 IOHIDDeviceScheduleWithRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
                 devices.append(device)
-                isFirstPressAfterConnection = true
-                connectionTime = mach_absolute_time()
+                return true
             }
         }
+        return false
+    }
+
+    func detachRemoteInterface(_ device: IOHIDDevice, endsSession: Bool) {
+        guard let index = devices.firstIndex(where: { $0 == device }) else { return }
+        closeRemoteInterface(devices.remove(at: index))
+
+        // The removed interface may be the only one that emits a matching key/select release.
+        // Close transient state immediately, but keep every surviving HID handle attached.
+        completeTriggeredReleaseActions()
+        releaseAllHeldKeys()
+        cancelPhysicalClick()
+        if endsSession {
+            disconnectAllRemoteInterfaces()
+        }
+    }
+
+    func disconnectAllRemoteInterfaces() {
+        for device in devices { closeRemoteInterface(device) }
+        devices.removeAll()
+        completeTriggeredReleaseActions()
+        releaseAllHeldKeys()
+        cancelPhysicalClick()
+    }
+
+    private func closeRemoteInterface(_ device: IOHIDDevice) {
+        IOHIDDeviceRegisterInputValueCallback(device, nil, nil)
+        IOHIDDeviceUnscheduleFromRunLoop(device, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
+        IOHIDDeviceClose(device, IOOptionBits(kIOHIDOptionsTypeNone))
     }
     
     func handleInputValue(_ value: IOHIDValue) {
@@ -114,12 +143,22 @@ class RemoteInputHandler {
 
         onButtonActivity?()
 
-        // Collapse mirrored-interface duplicates: only proceed on a real state transition.
+        // Collapse mirrored-interface duplicates. Menu/TV on Gen 1 often do not expose a
+        // reliable release event, but a long physical press can produce repeat key-downs.
+        // Keep those repeats: they are the only signal we can use to infer Hold.
         let isPressed = (intValue == 1)
-        if buttonState[buttonName] == isPressed {
-            return
+        if buttonName == "menu" || buttonName == "tv" {
+            guard isPressed else { return }
+            guard pressOnlySequenceGate.shouldAccept(
+                button: buttonName,
+                at: ProcessInfo.processInfo.systemUptime,
+                duplicateInterval: 0.075,
+                quietInterval: pressOnlySequenceQuietInterval
+            ) else { return }
+        } else {
+            if buttonState[buttonName] == isPressed { return }
+            buttonState[buttonName] = isPressed
         }
-        buttonState[buttonName] = isPressed
 
         let assigned = menuBarManager?.getMapping(for: buttonName) ?? .builtin(.none)
 
@@ -128,18 +167,6 @@ class RemoteInputHandler {
         // CoreAudio listener snaps the level back to the pre-press value.
         if isPressed && (buttonName == "volumeUp" || buttonName == "volumeDown") {
             VolumeRevertGuard.shared.armFromRemoteButton()
-        }
-
-        // First key-down after connection: skip so the connect handshake doesn't fire an
-        // action — but only within the swallow window. A press arriving later is the user.
-        if intValue == 1 && isFirstPressAfterConnection {
-            isFirstPressAfterConnection = false
-            let elapsed = Self.secondsSince(connectionTime)
-            if elapsed < connectSwallowWindow {
-                rmDebug(String(format: "⏭ swallowing connect-handshake press (%.2fs after connect)", elapsed))
-                return
-            }
-            rmDebug(String(format: "▶️ first press %.1fs after connect — treating as real input", elapsed))
         }
 
         // Select is the trackpad click — handled separately for click/drag semantics.
@@ -156,44 +183,240 @@ class RemoteInputHandler {
             RemoteInputHandler.lastProcessedTime = mach_absolute_time()
         }
 
-        if pressed {
-            print("🔘 Button pressed: \(buttonName) → \(assigned.persisted)")
+        if profileStore.isLegacyPassthrough(buttonName) {
+            if pressed { print("🔘 Button pressed: \(buttonName) → \(assigned.persisted)") }
+            executeAction(assigned, button: buttonName, pressed: pressed)
+        } else if buttonName == "menu" || buttonName == "tv" {
+            handlePressOnlyProfileInput(button: buttonName)
+        } else {
+            handleProfileInput(button: buttonName, pressed: pressed)
         }
-        executeAction(assigned, button: buttonName, pressed: pressed)
+    }
+
+    // MARK: - Profiles / multi-press
+
+    /// Invalidates gestures that began under an older profile or while profile storage was
+    /// unavailable. In particular, a key-up after recovery must not become a fresh Press action.
+    func prepareForProfileChange() {
+        profileGeneration &+= 1
+
+        // Complete lifecycle actions from the old profile before it is replaced. This is required
+        // for mappings such as Voice Start on Hold + Voice Stop on Release.
+        completeTriggeredReleaseActions()
+        pressOnlySequenceGate.quarantineActiveSequences(
+            at: ProcessInfo.processInfo.systemUptime,
+            quietInterval: pressOnlySequenceQuietInterval
+        )
+        releaseAllHeldKeys(resetPhysicalButtonState: false)
+    }
+
+    private var pressOnlySequenceQuietInterval: TimeInterval {
+        max(InputTiming.holdThreshold, InputTiming.doubleClickInterval) + 0.20
+    }
+
+    /// Menu/TV have no trustworthy release event on some Gen-1 firmware/macOS combinations.
+    /// We still support Hold opportunistically: a sustained press usually emits repeated key-down
+    /// events. If no repeats arrive, Hold is physically indistinguishable from a single press and
+    /// the single action wins after the configured threshold.
+    private func handlePressOnlyProfileInput(button: String) {
+        let now = mach_absolute_time()
+        let holdAction = profileStore.action(for: button, trigger: .hold)
+        let doubleAction = profileStore.action(for: button, trigger: .double)
+        let singleAction = profileStore.action(for: button, trigger: .single)
+
+        if let start = pressOnlySequenceStart[button] {
+            let elapsed = Self.elapsedSeconds(since: start)
+            if !holdAction.isNone && elapsed >= InputTiming.holdThreshold && elapsed < 2.0 {
+                pendingSingle.removeValue(forKey: button)?.cancel()
+                if !pressOnlyHoldFired.contains(button) {
+                    pressOnlyHoldFired.insert(button)
+                    actionExecutor.execute(holdAction, button: button)
+                }
+                return
+            }
+            if !doubleAction.isNone && elapsed <= InputTiming.doubleClickInterval {
+                pendingSingle.removeValue(forKey: button)?.cancel()
+                pressOnlySequenceStart.removeValue(forKey: button)
+                pressOnlyHoldFired.remove(button)
+                actionExecutor.execute(doubleAction, button: button)
+                return
+            }
+            // A new physical press after the gesture window starts a new sequence.
+            if elapsed > max(InputTiming.holdThreshold, InputTiming.doubleClickInterval) + 0.20 {
+                pressOnlySequenceStart[button] = now
+                pressOnlyHoldFired.remove(button)
+            }
+        } else {
+            pressOnlySequenceStart[button] = now
+            pressOnlyHoldFired.remove(button)
+        }
+
+        guard !singleAction.isNone else { return }
+        pendingSingle.removeValue(forKey: button)?.cancel()
+        let delay: Double
+        if !holdAction.isNone { delay = max(InputTiming.holdThreshold, InputTiming.doubleClickInterval) }
+        else if !doubleAction.isNone { delay = InputTiming.doubleClickInterval }
+        else { delay = 0 }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingSingle.removeValue(forKey: button)
+            self.pressOnlySequenceStart.removeValue(forKey: button)
+            self.pressOnlyHoldFired.remove(button)
+            self.actionExecutor.execute(singleAction, button: button)
+        }
+        pendingSingle[button] = work
+        if delay == 0 { DispatchQueue.main.async(execute: work) }
+        else { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) }
+    }
+
+    private func handleProfileInput(button: String, pressed: Bool) {
+        if !holdCapableButtons.contains(button) {
+            guard pressed else { return }
+            processTap(button)
+            return
+        }
+
+        if pressed {
+            profilePressGeneration[button] = profileGeneration
+            holdTriggered.remove(button)
+            pendingHold[button]?.cancel()
+
+            let holdAction = profileStore.action(for: button, trigger: .hold)
+            if !holdAction.isNone {
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self = self else { return }
+                    self.holdTriggered.insert(button)
+                    self.actionExecutor.execute(holdAction, button: button)
+                }
+                pendingHold[button] = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + InputTiming.holdThreshold, execute: work)
+            }
+        } else {
+            pendingHold.removeValue(forKey: button)?.cancel()
+            guard profilePressGeneration.removeValue(forKey: button) == profileGeneration else {
+                holdTriggered.remove(button)
+                return
+            }
+
+            if holdTriggered.remove(button) != nil {
+                let releaseAction = profileStore.action(for: button, trigger: .release)
+                if !releaseAction.isNone {
+                    actionExecutor.execute(releaseAction, button: button)
+                }
+                return
+            }
+
+            processTap(button)
+            let releaseAction = profileStore.action(for: button, trigger: .release)
+            if !releaseAction.isNone {
+                actionExecutor.execute(releaseAction, button: button)
+            }
+        }
+    }
+
+    private func processTap(_ button: String) {
+        let doubleAction = profileStore.action(for: button, trigger: .double)
+
+        if let first = pendingSingle.removeValue(forKey: button) {
+            first.cancel()
+            if !doubleAction.isNone {
+                actionExecutor.execute(doubleAction, button: button)
+            }
+            return
+        }
+
+        let singleAction = profileStore.action(for: button, trigger: .single)
+        guard !singleAction.isNone else { return }
+
+        // No double-click mapping means no artificial latency on the common single-press path.
+        if doubleAction.isNone {
+            actionExecutor.execute(singleAction, button: button)
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pendingSingle.removeValue(forKey: button)
+            self.actionExecutor.execute(singleAction, button: button)
+        }
+        pendingSingle[button] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + InputTiming.doubleClickInterval, execute: work)
+    }
+
+    private func cancelPendingProfileActions() {
+        for (_, work) in pendingSingle { work.cancel() }
+        for (_, work) in pendingHold { work.cancel() }
+        pendingSingle.removeAll()
+        pendingHold.removeAll()
+        holdTriggered.removeAll()
+        pressOnlySequenceStart.removeAll()
+        pressOnlyHoldFired.removeAll()
+        profilePressGeneration.removeAll()
+    }
+
+    private func completeTriggeredReleaseActions() {
+        let triggeredButtons = holdTriggered
+        holdTriggered.removeAll()
+        for button in triggeredButtons {
+            let releaseAction = profileStore.action(for: button, trigger: .release)
+            if !releaseAction.isNone {
+                actionExecutor.execute(releaseAction, button: button)
+            }
+        }
     }
     
     private func handleSelectButton(pressed: Bool) {
-        if pressed && !isSelectPressed {
-            isSelectPressed = true
-            isDragging = false
-            selectPressTime = mach_absolute_time()
-            cursorController.isClickActive = true
-            
-            // Start drag after threshold
-            DispatchQueue.main.asyncAfter(deadline: .now() + clickThreshold) { [weak self] in
-                guard let self = self, self.isSelectPressed && !self.isDragging else { return }
+        let effects = pressed ? physicalClickSession.press() : physicalClickSession.release()
+        applyPhysicalClickEffects(effects)
+    }
+
+    private func dragThresholdReached(token: UInt64) {
+        let effects = physicalClickSession.dragThresholdReached(token: token)
+        if !effects.isEmpty { selectDragWorkItem = nil }
+        applyPhysicalClickEffects(effects)
+    }
+
+    private func applyPhysicalClickEffects(_ effects: [PhysicalClickSession.Effect]) {
+        for effect in effects {
+            switch effect {
+            case .begin(let token):
+                selectDragWorkItem?.cancel()
+                // Anchor immediately so pressure-induced touch movement cannot move the target.
+                cursorController.beginPhysicalClick()
+                let work = DispatchWorkItem { [weak self] in
+                    self?.dragThresholdReached(token: token)
+                }
+                selectDragWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + clickThreshold, execute: work)
+            case .startDrag:
                 print("🔘 Select button: Drag started")
-                self.isDragging = true
-                self.cursorController.isDragging = true
-                self.cursorController.mouseDown()
-            }
-        } else if !pressed && isSelectPressed {
-            isSelectPressed = false
-            
-            if isDragging {
-                print("🔘 Select button: Drag ended")
-                cursorController.isDragging = false
-                cursorController.mouseUp()
-            } else {
+                cursorController.beginDrag()
+            case .finishClick:
+                selectDragWorkItem?.cancel()
+                selectDragWorkItem = nil
                 print("🔘 Select button: Click")
-                cursorController.performClick()
-            }
-            isDragging = false
-            
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.cursorController.isClickActive = false
+                cursorController.endPhysicalClick()
+            case .finishDrag:
+                selectDragWorkItem?.cancel()
+                selectDragWorkItem = nil
+                print("🔘 Select button: Drag ended")
+                cursorController.endPhysicalClick()
+            case .cancelPending, .cancelDrag:
+                selectDragWorkItem?.cancel()
+                selectDragWorkItem = nil
+                cursorController.cancelPhysicalClick()
             }
         }
+    }
+
+    private func cancelPhysicalClick() {
+        selectDragWorkItem?.cancel()
+        selectDragWorkItem = nil
+        let effects = physicalClickSession.cancel()
+        applyPhysicalClickEffects(effects)
+        // Defensive cleanup for any state created by an older app build or compatibility call.
+        if effects.isEmpty { cursorController.cancelPhysicalClick() }
     }
     
     // MARK: - Button Identification
@@ -282,6 +505,8 @@ class RemoteInputHandler {
                 sendKey(kVK_Escape)
             case .ctrlC:
                 sendKey(kVK_ANSI_C, flags: .maskControl)
+            case .mediaPlayPause:
+                actionExecutor.execute(.mediaPlayPause, button: button)
             case .spaceKey, .rightCmd, .rightOpt:
                 break // handled by handleHoldAction
             case .scrollUp, .scrollDown:
@@ -339,14 +564,20 @@ class RemoteInputHandler {
     }
 
     /// Called on device removal to avoid stuck modifiers if the remote disconnects mid-hold.
-    private func releaseAllHeldKeys() {
+    private func releaseAllHeldKeys(resetPhysicalButtonState: Bool = true) {
         for (_, held) in heldKeys {
             postKey(keyCode: held.keyCode, flags: [], keyDown: false)
         }
         heldKeys.removeAll()
-        buttonState.removeAll()
+        if resetPhysicalButtonState {
+            buttonState.removeAll()
+            pressOnlySequenceGate.reset()
+        } else {
+            pressOnlySequenceGate.clearAcceptedEvents()
+        }
         for (_, timer) in repeatTimers { timer.invalidate() }
         repeatTimers.removeAll()
+        cancelPendingProfileActions()
     }
 
     private func postKey(keyCode: Int, flags: CGEventFlags, keyDown: Bool) {

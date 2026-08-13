@@ -2,139 +2,169 @@
 //  CursorController.swift
 //  AppleTVremoteRebinder
 //
-//  Controls cursor movement and clicking using CGEvent
-//
 
 import CoreGraphics
 import CoreFoundation
 import Foundation
 import AppKit
 
-class CursorController {
-    private let sensitivity: CGFloat = 2.0
-    private let acceleration: CGFloat = 1.2
-    
-    var isDragging: Bool = false
-    var isClickActive: Bool = false
-    
-    // MARK: - Helper Functions
-    
-    /// Finds the screen containing the given point
-    /// Uses explicit bounds checking to handle coordinate system correctly
-    private func screenContaining(_ point: CGPoint) -> NSScreen? {
-        return NSScreen.screens.first { screen in
-            let frame = screen.frame
-            // Explicit bounds check (CGRect.contains can have edge cases)
-            return point.x >= frame.minX && 
-                   point.x < frame.maxX && 
-                   point.y >= frame.minY && 
-                   point.y < frame.maxY
+final class CursorController {
+    struct PhysicalClickSnapshot {
+        let isActive: Bool
+        let isDragging: Bool
+        let revision: UInt64
+    }
+
+    private let physicalClickLock = NSLock()
+    private var _isDragging = false
+    private var _isClickActive = false
+    private var _physicalClickRevision: UInt64 = 0
+
+    private var clickAnchor: CGPoint?
+    private var smoothedDX: CGFloat = 0
+    private var smoothedDY: CGFloat = 0
+
+    private func currentCursorPosition() -> CGPoint {
+        if let event = CGEvent(source: nil) { return event.location }
+        let p = NSEvent.mouseLocation
+        guard let main = NSScreen.main else { return p }
+        return CGPoint(x: p.x, y: main.frame.maxY - p.y)
+    }
+
+    var physicalClickSnapshot: PhysicalClickSnapshot {
+        physicalClickLock.lock()
+        defer { physicalClickLock.unlock() }
+        return PhysicalClickSnapshot(
+            isActive: _isClickActive,
+            isDragging: _isDragging,
+            revision: _physicalClickRevision
+        )
+    }
+
+    func beginPhysicalClick() {
+        cancelPhysicalClick()
+        let anchor = currentCursorPosition()
+        physicalClickLock.lock()
+        _physicalClickRevision &+= 1
+        _isClickActive = true
+        clickAnchor = anchor
+        physicalClickLock.unlock()
+    }
+
+    func beginDrag() {
+        physicalClickLock.lock()
+        guard _isClickActive, !_isDragging else {
+            physicalClickLock.unlock()
+            return
+        }
+        _isDragging = true
+        let anchor = clickAnchor
+        physicalClickLock.unlock()
+        let position = physicalClickPosition(anchor: anchor)
+        postMouse(.leftMouseDown, at: position, button: .left)
+    }
+
+    func endPhysicalClick() {
+        physicalClickLock.lock()
+        guard _isClickActive else {
+            physicalClickLock.unlock()
+            return
+        }
+        let wasDragging = _isDragging
+        let anchor = clickAnchor
+        clearPhysicalClickStateLocked()
+        physicalClickLock.unlock()
+
+        if wasDragging {
+            let position = currentCursorPosition()
+            postMouse(.leftMouseUp, at: position, button: .left)
+        } else {
+            performClick(at: physicalClickPosition(anchor: anchor))
         }
     }
-    
-    // MARK: - Cursor Movement
-    
-    // Returns true if cursor is at an edge of the current screen and would be clamped
+
+    func cancelPhysicalClick() {
+        physicalClickLock.lock()
+        guard _isClickActive || _isDragging else {
+            physicalClickLock.unlock()
+            return
+        }
+        let wasDragging = _isDragging
+        clearPhysicalClickStateLocked()
+        physicalClickLock.unlock()
+
+        if wasDragging {
+            postMouse(.leftMouseUp, at: currentCursorPosition(), button: .left)
+        }
+    }
+
+    private func physicalClickPosition(anchor: CGPoint?) -> CGPoint {
+        if TrackpadPreferences.clickLock, let anchor { return anchor }
+        return currentCursorPosition()
+    }
+
+    private func clearPhysicalClickStateLocked() {
+        _isDragging = false
+        _isClickActive = false
+        clickAnchor = nil
+    }
+
+    /// Smooth relative movement. During a pending physical click, cursor movement is frozen so
+    /// pressing the glass does not move the pointer off the intended control. Once drag begins,
+    /// movement resumes as leftMouseDragged.
     @discardableResult
     func moveCursor(deltaX: CGFloat, deltaY: CGFloat) -> (clampedX: Bool, clampedY: Bool) {
-        let scaledDeltaX = deltaX * sensitivity * (abs(deltaX) > 5 ? acceleration : 1.0)
-        let scaledDeltaY = deltaY * sensitivity * (abs(deltaY) > 5 ? acceleration : 1.0)
+        let click = physicalClickSnapshot
+        if click.isActive && !click.isDragging && TrackpadPreferences.clickLock {
+            return (false, false)
+        }
 
-            // Get current cursor position - use CGEvent which gives us global Quartz coordinates
-        // This works correctly across all displays
-        let beforePosition: CGPoint
-        if let event = CGEvent(source: nil), event.location != .zero {
-            beforePosition = event.location
-        } else {
-            // Fallback: use NSEvent and convert to Quartz coordinates
-            let nsLocation = NSEvent.mouseLocation
-            if let mainScreen = NSScreen.main {
-                let mainFrame = mainScreen.frame
-                let mainHeight = mainFrame.height
-                // NSEvent.mouseLocation is relative to main screen's bottom-left
-                // Convert to global Quartz coordinates
-                beforePosition = CGPoint(
-                    x: mainFrame.minX + nsLocation.x,
-                    y: mainFrame.minY + (mainHeight - nsLocation.y)
-                )
-            } else {
-                beforePosition = CGPoint(x: nsLocation.x, y: nsLocation.y)
-            }
-        }
-        
-        // Find current screen containing cursor for edge detection
-        let currentScreen = screenContaining(beforePosition)
-        let screenFrame = currentScreen?.frame
-        
-        // Calculate target position - don't clamp, let macOS handle multi-monitor movement
-        let targetX = beforePosition.x + scaledDeltaX
-        let targetY = beforePosition.y + scaledDeltaY
-        let targetPosition = CGPoint(x: targetX, y: targetY)
-        
-        // Edge detection for CURRENT screen only (if we found one)
-        var clampedX = false
-        var clampedY = false
-        
-        if let frame = screenFrame {
-            // Only report clamped if we're at the edge of current screen AND trying to move further
-            let atLeftEdge = beforePosition.x <= frame.minX + 1 && scaledDeltaX < 0
-            let atRightEdge = beforePosition.x >= frame.maxX - 1 && scaledDeltaX > 0
-            let atTopEdge = beforePosition.y <= frame.minY + 1 && scaledDeltaY < 0
-            let atBottomEdge = beforePosition.y >= frame.maxY - 1 && scaledDeltaY > 0
-            
-            clampedX = atLeftEdge || atRightEdge
-            clampedY = atTopEdge || atBottomEdge
-        }
-        
-        // Post the event - macOS handles all coordinate system conversions and multi-monitor movement
-        let eventType: CGEventType = isDragging ? .leftMouseDragged : .mouseMoved
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: eventType, mouseCursorPosition: targetPosition, mouseButton: .left) else {
-            return (clampedX, clampedY)
-        }
-        event.post(tap: CGEventTapLocation.cghidEventTap)
+        let sensitivity = CGFloat(TrackpadPreferences.sensitivity)
+        let smoothing = CGFloat(TrackpadPreferences.smoothing)
+        let deadZone = CGFloat(TrackpadPreferences.deadZone) * 500.0
+        var rawX = deltaX * sensitivity
+        var rawY = deltaY * sensitivity
+        if abs(rawX) < deadZone { rawX = 0 }
+        if abs(rawY) < deadZone { rawY = 0 }
 
-        return (clampedX, clampedY)
+        smoothedDX = smoothedDX * smoothing + rawX * (1 - smoothing)
+        smoothedDY = smoothedDY * smoothing + rawY * (1 - smoothing)
+
+        let before = currentCursorPosition()
+        let target = CGPoint(x: before.x + smoothedDX, y: before.y + smoothedDY)
+        let type: CGEventType = click.isDragging ? .leftMouseDragged : .mouseMoved
+        postMouse(type, at: target, button: .left)
+        return (false, false)
     }
-    
-    func performClick() {
-        let currentPosition = CGEvent(source: nil)?.location ?? .zero
-        
-        // Mouse down
-        guard let downEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: currentPosition, mouseButton: .left) else {
-            return
-        }
-        downEvent.post(tap: CGEventTapLocation.cghidEventTap)
-        
-        // Small delay
-        usleep(10000) // 10ms
-        
-        // Mouse up
-        guard let upEvent = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: currentPosition, mouseButton: .left) else {
-            return
-        }
-        upEvent.post(tap: CGEventTapLocation.cghidEventTap)
+
+    func resetMotionFilter() {
+        smoothedDX = 0
+        smoothedDY = 0
     }
-    
-    func mouseDown() {
-        let currentPosition = CGEvent(source: nil)?.location ?? .zero
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: currentPosition, mouseButton: .left) else {
-            return
-        }
-        event.post(tap: CGEventTapLocation.cghidEventTap)
+
+    func performClick() { performClick(at: currentCursorPosition()) }
+
+    func performClick(at position: CGPoint) {
+        postMouse(.leftMouseDown, at: position, button: .left)
+        usleep(18000)
+        postMouse(.leftMouseUp, at: position, button: .left)
     }
-    
-    func mouseUp() {
-        let currentPosition = CGEvent(source: nil)?.location ?? .zero
-        guard let event = CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: currentPosition, mouseButton: .left) else {
-            return
-        }
-        event.post(tap: CGEventTapLocation.cghidEventTap)
+
+    func performRightClick() {
+        let p = currentCursorPosition()
+        postMouse(.rightMouseDown, at: p, button: .right)
+        usleep(18000)
+        postMouse(.rightMouseUp, at: p, button: .right)
     }
-    
+
     func scroll(deltaX: Int32, deltaY: Int32) {
-        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2, wheel1: deltaY, wheel2: deltaX, wheel3: 0) else {
-            return
-        }
-        event.post(tap: CGEventTapLocation.cghidEventTap)
+        guard let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                                  wheel1: deltaY, wheel2: deltaX, wheel3: 0) else { return }
+        event.post(tap: .cghidEventTap)
+    }
+
+    private func postMouse(_ type: CGEventType, at point: CGPoint, button: CGMouseButton) {
+        guard let event = CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return }
+        event.post(tap: .cghidEventTap)
     }
 }

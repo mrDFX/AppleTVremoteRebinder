@@ -15,6 +15,7 @@ enum ButtonAction: String, CaseIterable {
     case downKey = "Down: Navigate Down"
     case escKey = "Esc: Navigate Back"
     case ctrlC = "Control + C: Cancel Prompt"
+    case mediaPlayPause = "Media Play/Pause"
     case spaceKey = "Space: Claude Voice Dictation"
     case rightCmd = "Right Command: 3rd-party Voice Dictation"
     case rightOpt = "Right Option: 3rd-party Voice Dictation"
@@ -142,6 +143,10 @@ class MenuBarManager {
     private let statusItem: NSStatusItem
     private let menu: NSMenu
     private let statusMenuItem: NSMenuItem
+    private let batteryMenuItem: NSMenuItem
+    private let profileStore: ProfileStore
+    private var settingsWindowController: SettingsWindowController?
+    private var remoteStatus = RemoteStatus.disconnected
     
     // Button mappings (stored in UserDefaults)
     private var buttonMappings: [String: AssignedAction] = [:]
@@ -164,11 +169,14 @@ class MenuBarManager {
 
     /// Set by app delegate so menu bar can delegate media actions to MediaController.
     var mediaController: MediaController?
+    var onNotificationPreferencesChanged: (() -> Void)?
 
-    init(statusItem: NSStatusItem) {
+    init(statusItem: NSStatusItem, profileStore: ProfileStore) {
         self.statusItem = statusItem
+        self.profileStore = profileStore
         self.menu = NSMenu()
         self.statusMenuItem = NSMenuItem(title: "Status: Disconnected", action: nil, keyEquivalent: "")
+        self.batteryMenuItem = NSMenuItem(title: "Battery: —", action: nil, keyEquivalent: "")
         
         loadMappings()
         loadSwipeMappings()
@@ -189,7 +197,7 @@ class MenuBarManager {
     private func loadMappings() {
         // Default mappings (only used on first launch / after schema upgrade)
         let defaultMappings: [String: AssignedAction] = [
-            "playPause": .builtin(.enterKey),
+            "playPause": .builtin(.mediaPlayPause),
             "menu": .builtin(.escKey),
             "select": .builtin(.trackpadClick),
             "volumeUp": .builtin(.upKey),
@@ -201,14 +209,19 @@ class MenuBarManager {
         // Schema version bumps:
         //   v3: old media-key actions removed — drop all saved button mappings
         //   v4: "select" default changed from .enterKey to .trackpadClick — reset just that entry
-        let currentSchema = 4
+        //   v5: Play/Pause becomes a real media action instead of the old Claude-oriented Enter default
+        let currentSchema = 5
         let savedSchema = UserDefaults.standard.integer(forKey: "buttonMappingsSchema")
         if savedSchema < 3 {
             UserDefaults.standard.removeObject(forKey: "buttonMappings")
-        } else if savedSchema < 4 {
-            // Targeted migration: reset "select" so the new default applies, preserve others.
+        } else {
             if var saved = UserDefaults.standard.dictionary(forKey: "buttonMappings") as? [String: String] {
-                saved.removeValue(forKey: "select")
+                if savedSchema < 4 {
+                    saved.removeValue(forKey: "select")
+                }
+                if savedSchema < 5, saved["playPause"] == ButtonAction.enterKey.rawValue {
+                    saved.removeValue(forKey: "playPause")
+                }
                 UserDefaults.standard.set(saved, forKey: "buttonMappings")
             }
         }
@@ -317,6 +330,8 @@ class MenuBarManager {
         // Status
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
+        batteryMenuItem.isEnabled = false
+        menu.addItem(batteryMenuItem)
         
         menu.addItem(NSMenuItem.separator())
         
@@ -440,6 +455,25 @@ class MenuBarManager {
 
         menu.addItem(NSMenuItem.separator())
 
+        let profileTitle: String
+        if profileStore.storageWarning != nil {
+            profileTitle = "Profiles Unavailable — Profile Actions Disabled"
+        } else {
+            profileTitle = "Active Profile: \(profileStore.activeProfile.name)"
+        }
+        let activeProfile = NSMenuItem(title: profileTitle, action: nil, keyEquivalent: "")
+        if profileStore.storageWarning != nil {
+            activeProfile.image = NSImage(systemSymbolName: "exclamationmark.triangle", accessibilityDescription: "Profile storage warning")
+        }
+        activeProfile.isEnabled = false
+        menu.addItem(activeProfile)
+
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         // Quit
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
@@ -504,11 +538,20 @@ class MenuBarManager {
         }
     }
     
-    func updateConnectionStatus(connected: Bool) {
+    func updateRemoteStatus(_ status: RemoteStatus) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            self.statusMenuItem.title = connected ? "Status: Connected ✓" : "Status: Disconnected"
-            self.statusItem.button?.appearsDisabled = !connected
+            self.remoteStatus = status
+            self.statusMenuItem.title = status.isConnected ? "Status: Connected ✓" : "Status: Disconnected"
+            if status.isConnected, let battery = status.batteryPercent {
+                self.batteryMenuItem.title = "Battery: \(battery)%"
+            } else if status.isConnected {
+                self.batteryMenuItem.title = "Battery: Unavailable"
+            } else {
+                self.batteryMenuItem.title = "Battery: —"
+            }
+            self.statusItem.button?.appearsDisabled = !status.isConnected
+            self.settingsWindowController?.updateRemoteStatus(status)
         }
     }
     
@@ -634,6 +677,8 @@ class MenuBarManager {
                 sendKey(kVK_Escape)
             case .ctrlC:
                 sendKey(kVK_ANSI_C, flags: .maskControl)
+            case .mediaPlayPause:
+                mediaController?.sendMediaKey(.playPause)
             case .spaceKey:
                 sendKey(kVK_Space)
             case .rightCmd:
@@ -693,6 +738,23 @@ class MenuBarManager {
         up?.post(tap: .cghidEventTap)
     }
     
+    @objc private func openSettings() {
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(
+                profileStore: profileStore,
+                remoteStatus: remoteStatus,
+                onNotificationPreferencesChanged: { [weak self] in
+                    self?.onNotificationPreferencesChanged?()
+                }
+            )
+        }
+        settingsWindowController?.show()
+    }
+
+    func profileDidChange() {
+        rebuildMenu()
+    }
+
     @objc private func quitApp() {
         NSStatusBar.system.removeStatusItem(statusItem)
         NSApp.terminate(nil)

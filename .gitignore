@@ -1,6 +1,7 @@
 # Build artifacts
 Remotastic
 Remotastic.app/
+AppleTVremoteRebinder.app/
 
 # Xcode
 .swiftpm/

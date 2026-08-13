@@ -85,8 +85,16 @@ Button mappings and swipe mappings are saved to UserDefaults (`buttonMappings`, 
 ### Safety
 
 - **Stuck-key prevention.** If the remote disconnects while a push-to-talk key is held, AppleTVremoteRebinder releases the virtual key automatically.
+- **Balanced physical clicks.** Disconnecting during a drag sends the matching mouse-up, and delayed drag timers cannot leak into the next click.
+- **Interface-safe reconnect.** The remote remains connected while any of its HID interfaces is still present; losing one interface no longer tears down the others.
 - **Stale-hold self-heal.** If a release HID event is ever missed, the next press closes the stale hold before opening a new one.
 - **HID seize.** On connect, AppleTVremoteRebinder seizes the remote at the HID level so macOS no longer also sees media key events from it — no double-dispatch (e.g., to iTunes/Music), no system funk sound on unhandled keys.
+
+### Remote Status and Battery
+
+The menu bar and **Settings → General** show live connection state, active HID interface count, and the Siri Remote battery percentage when macOS exposes it. Battery reads use standard HID battery usages first, with the driver's `BatteryPercent` IORegistry property as a compatibility fallback. If the A1513 firmware/macOS combination does not publish either value, the UI reports **Battery: Unavailable** instead of inventing a percentage.
+
+Connection/disconnection and low-battery notifications are independently configurable under **Settings → General**. Disconnect alerts wait briefly to absorb normal Bluetooth interface re-enumeration, while low-battery alerts use hysteresis and a persisted cooldown to avoid repeated notifications.
 
 ---
 
@@ -104,6 +112,13 @@ Button mappings and swipe mappings are saved to UserDefaults (`buttonMappings`, 
 ```
 
 This runs a single `swiftc` invocation over all the project's Swift files, linking IOKit, CoreGraphics, AudioToolbox, Carbon, AppKit, and the private MultitouchSupport framework via a bridging header. No Xcode project is required.
+
+Profile persistence regression tests use an isolated `UserDefaults` suite and do not touch the app's saved settings:
+
+```bash
+./run_profile_tests.sh
+./run_input_tests.sh
+```
 
 ---
 
@@ -170,3 +185,16 @@ Between the private `MultitouchSupport` framework and the undocumented `NX_SYSDE
   - [Arrow Up by Dayeong Kim](https://thenounproject.com/icon/arrow-up-6066125/)
   - [Microphone by Alvida](https://thenounproject.com/icon/microphone-8162320/)
   - [Radio by Kiran Shastry](https://thenounproject.com/icon/radio-2338991/)
+## TV-mode profiles and advanced input
+
+AppleTVremoteRebinder includes a native Settings window with editable profiles. Each Siri Remote button can map Press, Double Press, Hold and (where macOS exposes it) Release independently. Actions include native media/system controls, arbitrary keyboard shortcuts, app launch/activation, per-app two-app toggles, URL/shell actions and voice-input control.
+
+The HTPC preset is only a starting point. Kodi and Google Chrome paths are stored in the profile and remain user-editable. Toggle Two Apps stores an independent `launch if needed` and `full screen` policy for each side, so Kodi can be launched fullscreen while Chrome is only activated.
+
+### Trackpad feel
+
+The Gen-1 touch surface uses smoothing, sensitivity controls and pointer-lock while the physical click is pending. Pointer lock prevents the small finger movement caused by pressing the glass from moving the cursor off the target. Drag starts only after the configurable drag threshold.
+
+### Siri Remote microphone
+
+Remote Buddy 2 does not expose the Siri Remote microphone. AppleTVremoteRebinder provides a first-class Voice Input action and a configurable external voice-bridge command so the reverse-engineered `SiriRemoteVoiceControl`/PacketLogger path (or a replacement decoder) can feed a virtual audio input without hard-coding one decoder into the application. Configure the bridge and dictation/PTT shortcut under **Settings → Media & Voice**, then map **Voice Input — Start** to Microphone/Hold and **Voice Input — Stop** to Microphone/Release.

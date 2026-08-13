@@ -12,8 +12,16 @@ SWIFT_FILES=(
     "SiriRemoteApp.swift"
     "MenuBarManager.swift"
     "KeyCaptureController.swift"
+    "RemoteProfiles.swift"
+    "RemoteActionExecutor.swift"
+    "VoiceInputController.swift"
+    "SettingsWindowController.swift"
     "RemoteDetector.swift"
     "RemoteInputHandler.swift"
+    "PressOnlySequenceGate.swift"
+    "RemoteLifecycle.swift"
+    "RemoteBatteryReader.swift"
+    "RemoteNotifications.swift"
     "CursorController.swift"
     "MediaController.swift"
     "MediaKeyInterceptor.swift"
@@ -43,7 +51,7 @@ fi
 echo "Building for: $TARGET"
 
 # Build
-swiftc \
+if swiftc \
     -sdk "$SDK_PATH" \
     -target "$TARGET" \
     -o AppleTVremoteRebinder \
@@ -55,9 +63,8 @@ swiftc \
     -framework AudioToolbox \
     -framework Carbon \
     -framework AppKit \
-    -framework MultitouchSupport
-
-if [ $? -eq 0 ]; then
+    -framework UserNotifications \
+    -framework MultitouchSupport; then
     echo ""
     echo "✓ Build successful!"
     echo ""

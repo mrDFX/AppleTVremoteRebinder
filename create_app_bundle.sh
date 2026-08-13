@@ -36,7 +36,10 @@ fi
 # Copy menu bar icon resources
 if [ -d "Resources" ]; then
     cp Resources/MenuBarIcon*.png "${APP_BUNDLE}/Contents/Resources/" 2>/dev/null || true
-    echo "Menu bar icons added to app bundle"
+    if [ -d "Resources/RemoteIcons" ]; then
+        cp -R Resources/RemoteIcons "${APP_BUNDLE}/Contents/Resources/"
+    fi
+    echo "UI icon resources added to app bundle"
 fi
 
 # Create proper Info.plist with all required keys

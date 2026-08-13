@@ -18,8 +18,17 @@ let package = Package(
                 "main.swift",
                 "SiriRemoteApp.swift",
                 "MenuBarManager.swift",
+                "KeyCaptureController.swift",
+                "RemoteProfiles.swift",
+                "RemoteActionExecutor.swift",
+                "VoiceInputController.swift",
+                "SettingsWindowController.swift",
                 "RemoteDetector.swift",
                 "RemoteInputHandler.swift",
+                "PressOnlySequenceGate.swift",
+                "RemoteLifecycle.swift",
+                "RemoteBatteryReader.swift",
+                "RemoteNotifications.swift",
                 "CursorController.swift",
                 "MediaController.swift",
                 "MediaKeyInterceptor.swift",
@@ -31,7 +40,8 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("AudioToolbox"),
                 .linkedFramework("Carbon"),
-                .linkedFramework("AppKit")
+                .linkedFramework("AppKit"),
+                .linkedFramework("UserNotifications")
             ]
         )
     ]

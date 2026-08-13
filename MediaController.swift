@@ -11,6 +11,7 @@ import CoreGraphics
 import Darwin
 
 class MediaController {
+    static let syntheticEventMarker: Int64 = 0x41545242 // "ATRB"
 
     func sendMediaKey(_ keyType: MediaKeyInterceptor.MediaKeyType) {
         guard let nxCode = nxKeyCode(for: keyType) else { return }
@@ -53,8 +54,14 @@ class MediaController {
             data2: -1
         )
         let sessionTap: CGEventTapLocation = .cgSessionEventTap
-        keyDown?.cgEvent?.post(tap: sessionTap)
+        if let downEvent = keyDown?.cgEvent {
+            downEvent.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+            downEvent.post(tap: sessionTap)
+        }
         usleep(50000)
-        keyUp?.cgEvent?.post(tap: sessionTap)
+        if let upEvent = keyUp?.cgEvent {
+            upEvent.setIntegerValueField(.eventSourceUserData, value: Self.syntheticEventMarker)
+            upEvent.post(tap: sessionTap)
+        }
     }
 }
