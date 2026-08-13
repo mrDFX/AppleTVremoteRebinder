@@ -409,10 +409,16 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         lowBatteryNotificationCheckbox.state = RemoteNotificationPreferences.lowBatteryEnabled ? .on : .off
         lowBatteryNotificationCheckbox.target = self
         lowBatteryNotificationCheckbox.action = #selector(notificationPreferencesChanged)
+        let openNotifSettings = NSButton(title: "Open System Settings → Notifications", target: self, action: #selector(openNotificationSystemSettings))
+        openNotifSettings.bezelStyle = .rounded
+        openNotifSettings.controlSize = .small
+        let openBluetoothSettings = NSButton(title: "Open System Settings → Bluetooth", target: self, action: #selector(openBluetoothSystemSettings))
+        openBluetoothSettings.bezelStyle = .rounded
+        openBluetoothSettings.controlSize = .small
         stack.addArrangedSubview(preferenceCard(
             "System notifications",
-            views: [connectionNotificationCheckbox, lowBatteryNotificationCheckbox],
-            note: "macOS asks for notification permission when either alert is enabled. Grant it in System Settings → Notifications if the request was previously declined."
+            views: [connectionNotificationCheckbox, lowBatteryNotificationCheckbox, openNotifSettings, openBluetoothSettings],
+            note: "macOS asks for notification permission when either alert is enabled. If the request was previously declined, grant it manually in System Settings."
         ))
 
         lowBatteryThresholdSlider.doubleValue = Double(RemoteNotificationPreferences.lowBatteryThreshold)
@@ -751,6 +757,18 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         lowBatteryThresholdSlider.isEnabled = RemoteNotificationPreferences.lowBatteryEnabled
         lowBatteryThresholdDetail.stringValue = "Notify at \(RemoteNotificationPreferences.lowBatteryThreshold)% or below."
         onNotificationPreferencesChanged()
+    }
+
+    @objc private func openNotificationSystemSettings() {
+        openSystemSettings(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"))
+    }
+
+    @objc private func openBluetoothSystemSettings() {
+        openSystemSettings(URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings"))
+    }
+
+    private func openSystemSettings(_ url: URL?) {
+        if let url { NSWorkspace.shared.open(url) }
     }
 
     private func set(_ action: RemoteAction, _ profileID: UUID, _ button: String, _ trigger: RemoteTrigger) { profileStore.setAction(action, profileID: profileID, button: button, trigger: trigger); reloadSelectedProfile() }
