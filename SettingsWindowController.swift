@@ -68,6 +68,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     private let voiceAutoStartCheckbox = NSButton(checkboxWithTitle: "Start voice bridge automatically", target: nil, action: nil)
     private let voiceCommandField = NSTextField()
     private let voiceShortcutButton = NSButton(title: "Set Dictation Shortcut…", target: nil, action: nil)
+    private let voiceShortcutTestButton = NSButton(title: "Test Shortcut", target: nil, action: nil)
     private let remoteConnectionLabel = NSTextField(labelWithString: "Connection: Disconnected")
     private let remoteBatteryLabel = NSTextField(labelWithString: "Battery: —")
     private let remoteInterfacesLabel = NSTextField(labelWithString: "HID interfaces: 0")
@@ -376,9 +377,13 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         voiceCommandField.placeholderString = "Bridge command (PacketLogger | SiriRemoteVoiceControl …)"; voiceCommandField.stringValue = VoicePreferences.bridgeCommand
         voiceCommandField.target = self; voiceCommandField.action = #selector(voiceChanged)
         voiceShortcutButton.target = self; voiceShortcutButton.action = #selector(setVoiceShortcut)
-        let status = NSTextField(wrappingLabelWithString: "Use the “Siri Remote Voice Input” action on the Microphone button. The bridge command is intentionally configurable so PacketLogger/SiriRemoteVoiceControl, BlackHole or another decoder can be swapped without rebuilding this app.")
+        voiceShortcutButton.title = "Dictation: \(VoicePreferences.dictationDisplay)"
+        voiceShortcutTestButton.target = self; voiceShortcutTestButton.action = #selector(testVoiceShortcut)
+        voiceShortcutTestButton.bezelStyle = .rounded
+        voiceShortcutTestButton.controlSize = .small
+        let status = NSTextField(wrappingLabelWithString: "Voice Input — Start posts the shortcut set here. Assign the same shortcut in System Settings → Keyboard → Dictation so macOS starts listening. macOS ignores synthesised Fn Fn for privacy, so pick a normal shortcut (default: ⌃⌥⌘V). The bridge command is optional — for PacketLogger / SiriRemoteVoiceControl / BlackHole feeding a virtual audio input.")
         status.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(preferenceCard("Voice bridge", views: [voiceEnabledCheckbox, voiceAutoStartCheckbox, voiceCommandField, voiceShortcutButton], note: status.stringValue))
+        stack.addArrangedSubview(preferenceCard("Voice bridge", views: [voiceEnabledCheckbox, voiceAutoStartCheckbox, voiceCommandField, voiceShortcutButton, voiceShortcutTestButton], note: status.stringValue))
         return root.root
     }
 
@@ -748,7 +753,42 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     @objc private func trackpadChanged(_ sender: Any) { TrackpadPreferences.sensitivity = sensitivitySlider.doubleValue; TrackpadPreferences.smoothing = smoothingSlider.doubleValue; TrackpadPreferences.tapToClick = tapCheckbox.state == .on; TrackpadPreferences.clickLock = clickLockCheckbox.state == .on; TrackpadPreferences.naturalScroll = naturalScrollCheckbox.state == .on }
     @objc private func preventMusicChanged(_ sender: NSButton) { profileStore.preventAppleMusicAutoLaunch = sender.state == .on }
     @objc private func voiceChanged(_ sender: Any) { VoicePreferences.enabled = voiceEnabledCheckbox.state == .on; VoicePreferences.autoStartBridge = voiceAutoStartCheckbox.state == .on; VoicePreferences.bridgeCommand = voiceCommandField.stringValue }
-    @objc private func setVoiceShortcut() { if let c = manualShortcut() { VoicePreferences.dictationKeyCode = c.keyCode; VoicePreferences.dictationFlags = c.flags.rawValue; VoicePreferences.dictationDisplay = c.display; voiceShortcutButton.title = "Dictation: \(c.display)" } }
+    @objc private func setVoiceShortcut() {
+        guard let c = manualShortcut() else { return }
+        if isFnOnlyShortcut(keyCode: c.keyCode, flags: c.flags) {
+            let alert = NSAlert()
+            alert.messageText = "Fn cannot be posted programmatically"
+            alert.informativeText = "macOS filters synthesised Fn / Fn Fn events for privacy, so this shortcut will never trigger Dictation from the remote. Pick a regular shortcut such as ⌃⌥⌘V, then set the same one in System Settings → Keyboard → Dictation."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Use It Anyway")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertSecondButtonReturn { return }
+        }
+        VoicePreferences.dictationKeyCode = c.keyCode
+        VoicePreferences.dictationFlags = c.flags.rawValue
+        VoicePreferences.dictationDisplay = c.display
+        voiceShortcutButton.title = "Dictation: \(c.display)"
+    }
+
+    @objc private func testVoiceShortcut() {
+        let flags = CGEventFlags(rawValue: VoicePreferences.dictationFlags)
+        let source = CGEventSource(stateID: .hidSystemState)
+        let key = CGKeyCode(VoicePreferences.dictationKeyCode)
+        let down = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: key, keyDown: false)
+        down?.flags = flags
+        up?.flags = flags
+        down?.post(tap: .cghidEventTap)
+        usleep(15_000)
+        up?.post(tap: .cghidEventTap)
+    }
+
+    private func isFnOnlyShortcut(keyCode: Int, flags: CGEventFlags) -> Bool {
+        let fnKey = 63 // kVK_Function
+        let onlyFnFlag = flags.rawValue == UInt64(CGEventFlags.maskSecondaryFn.rawValue) && keyCode == 0
+        let bareFnKey = keyCode == fnKey && flags.rawValue == 0
+        return onlyFnFlag || bareFnKey
+    }
     @objc private func notificationPreferencesChanged(_ sender: Any) {
         RemoteNotificationPreferences.hudEnabled = hudEnabledCheckbox.state == .on
         RemoteNotificationPreferences.connectionEnabled = connectionNotificationCheckbox.state == .on
