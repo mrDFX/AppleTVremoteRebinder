@@ -42,12 +42,13 @@ class RemoteDetector {
     private var lastBatterySampleUptime: TimeInterval = 0
     private var lastPublishedStatus = RemoteStatus.disconnected
     private var delayedBatteryRefresh: DispatchWorkItem?
-    
+    private let batteryProbe = BluetoothBatteryProbe()
+
     private let appleVendorID: Int = 0x004C
-    
+
     // Known Siri Remote / Apple TV Remote product IDs
     private let knownProductIDs: [Int] = [
-        0x0221, 0x0255, 0x0266, 0x0267, 0x0269,
+        0x0221, 0x0255, 0x0266, 0x0267, 0x0269, 0x026D,
         0x0C4E, 0x0C4F, 0x030D, 0x030E
     ]
     
@@ -266,6 +267,8 @@ class RemoteDetector {
                 if let battery = RemoteBatteryReader.batteryPercent(from: Array(devices.values)) {
                     lastBatteryPercent = battery
                     rmDebug("🔋 Siri Remote battery: \(battery)%")
+                } else {
+                    requestBluetoothBatteryProbe(force: forceBatteryRead)
                 }
             }
             status = RemoteStatus(
@@ -281,6 +284,47 @@ class RemoteDetector {
         guard status != lastPublishedStatus else { return }
         lastPublishedStatus = status
         _ = eventCallback?(.statusChanged(status))
+    }
+
+    private func requestBluetoothBatteryProbe(force: Bool) {
+        let identity = currentBluetoothIdentity()
+        guard !identity.isEmpty else { return }
+        batteryProbe.readBatteryPercent(matching: identity, force: force) { [weak self] percent in
+            DispatchQueue.main.async {
+                guard let self, self.interfaceRegistry.isConnected, let percent else { return }
+                self.lastBatteryPercent = percent
+                self.lastBatterySampleUptime = ProcessInfo.processInfo.systemUptime
+                self.publishStatus(forceBatteryRead: false)
+            }
+        }
+    }
+
+    private func currentBluetoothIdentity() -> BluetoothBatteryIdentity {
+        var vendorID: Int?
+        var productID: Int?
+        var serial: String?
+        var names: Set<String> = []
+        for device in devices.values {
+            if vendorID == nil {
+                vendorID = IOHIDDeviceGetProperty(device, kIOHIDVendorIDKey as CFString) as? Int
+            }
+            if productID == nil {
+                productID = IOHIDDeviceGetProperty(device, kIOHIDProductIDKey as CFString) as? Int
+            }
+            if serial == nil {
+                serial = IOHIDDeviceGetProperty(device, kIOHIDSerialNumberKey as CFString) as? String
+            }
+            if let name = IOHIDDeviceGetProperty(device, kIOHIDProductKey as CFString) as? String {
+                names.insert(name)
+            }
+        }
+        if let sessionProductName { names.insert(sessionProductName) }
+        return BluetoothBatteryIdentity(
+            vendorID: vendorID,
+            productID: productID,
+            serial: serial,
+            nameHints: Array(names)
+        )
     }
 
     private func interfaceIdentifier(for device: IOHIDDevice) -> InterfaceIdentifier {

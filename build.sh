@@ -21,6 +21,7 @@ SWIFT_FILES=(
     "PressOnlySequenceGate.swift"
     "RemoteLifecycle.swift"
     "RemoteBatteryReader.swift"
+    "BluetoothBatteryProbe.swift"
     "RemoteNotifications.swift"
     "CursorController.swift"
     "MediaController.swift"
