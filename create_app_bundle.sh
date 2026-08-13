@@ -68,7 +68,7 @@ cat > "${APP_BUNDLE}/Contents/Info.plist" <<EOF
 	<key>CFBundleIconFile</key>
 	<string>AppleTVremoteRebinder</string>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 AppleTVremoteRebinder Contributors</string>
+	<string>Copyright © 2026 AppleTVremoteRebinder by mr.D.F.X.</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>11.0</string>
 	<key>LSUIElement</key>
