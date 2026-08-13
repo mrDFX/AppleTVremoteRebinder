@@ -26,7 +26,7 @@ final class BluetoothBatteryProbe {
     private var inFlight = false
     private var pendingCompletions: [(Int?) -> Void] = []
 
-    init(cacheTTL: TimeInterval = 300, cooldown: TimeInterval = 20) {
+    init(cacheTTL: TimeInterval = 300, cooldown: TimeInterval = 120) {
         self.cacheTTL = cacheTTL
         self.cooldown = cooldown
     }

@@ -261,14 +261,17 @@ class RemoteDetector {
         let status: RemoteStatus
         if interfaceRegistry.isConnected {
             let now = ProcessInfo.processInfo.systemUptime
-            let retryInterval: TimeInterval = lastBatteryPercent == nil ? 5 : 60
+            let retryInterval: TimeInterval = lastBatteryPercent == nil ? 30 : 60
             if forceBatteryRead || now - lastBatterySampleUptime >= retryInterval {
-                lastBatterySampleUptime = now
                 if let battery = RemoteBatteryReader.batteryPercent(from: Array(devices.values)) {
                     lastBatteryPercent = battery
+                    lastBatterySampleUptime = now
                     rmDebug("🔋 Siri Remote battery: \(battery)%")
                 } else {
-                    requestBluetoothBatteryProbe(force: forceBatteryRead)
+                    // Do not update lastBatterySampleUptime on failure so a real
+                    // change (e.g. new interface, next refresh) can still retry,
+                    // but rely on the probe's own cooldown to avoid spam.
+                    requestBluetoothBatteryProbe()
                 }
             }
             status = RemoteStatus(
@@ -286,10 +289,10 @@ class RemoteDetector {
         _ = eventCallback?(.statusChanged(status))
     }
 
-    private func requestBluetoothBatteryProbe(force: Bool) {
+    private func requestBluetoothBatteryProbe() {
         let identity = currentBluetoothIdentity()
         guard !identity.isEmpty else { return }
-        batteryProbe.readBatteryPercent(matching: identity, force: force) { [weak self] percent in
+        batteryProbe.readBatteryPercent(matching: identity) { [weak self] percent in
             DispatchQueue.main.async {
                 guard let self, self.interfaceRegistry.isConnected, let percent else { return }
                 self.lastBatteryPercent = percent
