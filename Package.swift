@@ -31,6 +31,7 @@ let package = Package(
                 "BluetoothBatteryProbe.swift",
                 "CoreBluetoothBatteryReader.swift",
                 "RemoteNotifications.swift",
+                "RemoteHUDController.swift",
                 "CursorController.swift",
                 "MediaController.swift",
                 "MediaKeyInterceptor.swift",

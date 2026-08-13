@@ -73,6 +73,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     private let remoteInterfacesLabel = NSTextField(labelWithString: "HID interfaces: 0")
     private let connectionNotificationCheckbox = NSButton(checkboxWithTitle: "Notify when the remote connects or disconnects", target: nil, action: nil)
     private let lowBatteryNotificationCheckbox = NSButton(checkboxWithTitle: "Notify when the remote battery is low", target: nil, action: nil)
+    private let hudEnabledCheckbox = NSButton(checkboxWithTitle: "Show on-screen HUD for connect / disconnect / low battery", target: nil, action: nil)
     private let lowBatteryThresholdSlider = NSSlider(value: Double(RemoteNotificationPreferences.lowBatteryThreshold), minValue: 5, maxValue: 30, target: nil, action: nil)
     private let lowBatteryThresholdDetail = NSTextField(labelWithString: "")
 
@@ -392,7 +393,16 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
             note: "Battery is shown when the connected remote exposes a supported HID battery value."
         ))
 
-        stack.addArrangedSubview(sectionTitle("Notifications", subtitle: "Connection alerts are debounced during quick Bluetooth re-enumeration."))
+        stack.addArrangedSubview(sectionTitle("Alerts", subtitle: "Connection alerts are debounced during quick Bluetooth re-enumeration."))
+        hudEnabledCheckbox.state = RemoteNotificationPreferences.hudEnabled ? .on : .off
+        hudEnabledCheckbox.target = self
+        hudEnabledCheckbox.action = #selector(notificationPreferencesChanged)
+        stack.addArrangedSubview(preferenceCard(
+            "On-screen HUD",
+            views: [hudEnabledCheckbox],
+            note: "Shows a brief centered overlay for connect / disconnect / low battery. Works without notification permission."
+        ))
+
         connectionNotificationCheckbox.state = RemoteNotificationPreferences.connectionEnabled ? .on : .off
         connectionNotificationCheckbox.target = self
         connectionNotificationCheckbox.action = #selector(notificationPreferencesChanged)
@@ -400,9 +410,9 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
         lowBatteryNotificationCheckbox.target = self
         lowBatteryNotificationCheckbox.action = #selector(notificationPreferencesChanged)
         stack.addArrangedSubview(preferenceCard(
-            "Remote alerts",
+            "System notifications",
             views: [connectionNotificationCheckbox, lowBatteryNotificationCheckbox],
-            note: "macOS asks for notification permission when either alert is enabled."
+            note: "macOS asks for notification permission when either alert is enabled. Grant it in System Settings → Notifications if the request was previously declined."
         ))
 
         lowBatteryThresholdSlider.doubleValue = Double(RemoteNotificationPreferences.lowBatteryThreshold)
@@ -734,6 +744,7 @@ final class SettingsWindowController: NSWindowController, NSTableViewDataSource,
     @objc private func voiceChanged(_ sender: Any) { VoicePreferences.enabled = voiceEnabledCheckbox.state == .on; VoicePreferences.autoStartBridge = voiceAutoStartCheckbox.state == .on; VoicePreferences.bridgeCommand = voiceCommandField.stringValue }
     @objc private func setVoiceShortcut() { if let c = manualShortcut() { VoicePreferences.dictationKeyCode = c.keyCode; VoicePreferences.dictationFlags = c.flags.rawValue; VoicePreferences.dictationDisplay = c.display; voiceShortcutButton.title = "Dictation: \(c.display)" } }
     @objc private func notificationPreferencesChanged(_ sender: Any) {
+        RemoteNotificationPreferences.hudEnabled = hudEnabledCheckbox.state == .on
         RemoteNotificationPreferences.connectionEnabled = connectionNotificationCheckbox.state == .on
         RemoteNotificationPreferences.lowBatteryEnabled = lowBatteryNotificationCheckbox.state == .on
         RemoteNotificationPreferences.lowBatteryThreshold = Int(lowBatteryThresholdSlider.doubleValue.rounded())

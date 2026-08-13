@@ -23,6 +23,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var actionExecutor: RemoteActionExecutor!
     private var voiceInputController: VoiceInputController!
     private var remoteNotificationController: RemoteNotificationController!
+    private var remoteHUDController: RemoteHUDController!
     private var remoteStatus = RemoteStatus.disconnected
     
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -56,7 +57,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         // Initialize menu bar manager and profile/action engine.
         menuBarManager = MenuBarManager(statusItem: statusItem, profileStore: profileStore)
-        remoteNotificationController = RemoteNotificationController()
+        remoteHUDController = RemoteHUDController()
+        remoteNotificationController = RemoteNotificationController(hud: remoteHUDController)
         remoteNotificationController.start(currentStatus: remoteStatus)
         menuBarManager.onNotificationPreferencesChanged = { [weak self] in
             self?.remoteNotificationController.preferencesDidChange()

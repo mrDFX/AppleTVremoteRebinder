@@ -5,6 +5,7 @@ enum RemoteNotificationPreferences {
     private static let connectionKey = "notifications.remoteConnection"
     private static let lowBatteryKey = "notifications.lowBattery"
     private static let lowBatteryThresholdKey = "notifications.lowBatteryThreshold"
+    private static let hudKey = "notifications.hudEnabled"
 
     static var connectionEnabled: Bool {
         get { UserDefaults.standard.bool(forKey: connectionKey) }
@@ -24,6 +25,17 @@ enum RemoteNotificationPreferences {
         set { UserDefaults.standard.set(min(30, max(5, newValue)), forKey: lowBatteryThresholdKey) }
     }
 
+    /// On-screen HUD (borderless overlay window) shown for connect/disconnect/
+    /// low-battery events. Independent of macOS UserNotifications; defaults ON
+    /// so the user always sees something even when banners are denied.
+    static var hudEnabled: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: hudKey) == nil { return true }
+            return UserDefaults.standard.bool(forKey: hudKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: hudKey) }
+    }
+
     static var anyEnabled: Bool { connectionEnabled || lowBatteryEnabled }
 }
 
@@ -31,13 +43,20 @@ final class RemoteNotificationController: NSObject, UNUserNotificationCenterDele
     private static let lastLowBatteryNotificationKey = "notifications.lastLowBatteryDate"
 
     private let center: UNUserNotificationCenter
+    private let hud: RemoteHUDController?
     private var currentStatus = RemoteStatus.disconnected
     private var connectionPolicy = RemoteConnectionAlertPolicy()
     private var pendingDisconnect: DispatchWorkItem?
     private var lowBatteryPolicy = LowBatteryAlertPolicy()
+    private var hudLowBatteryPolicy = LowBatteryAlertPolicy()
+    private static let hudLastLowBatteryKey = "notifications.hudLastLowBatteryDate"
 
-    init(center: UNUserNotificationCenter = .current()) {
+    init(
+        center: UNUserNotificationCenter = .current(),
+        hud: RemoteHUDController? = nil
+    ) {
         self.center = center
+        self.hud = hud
         super.init()
         center.delegate = self
     }
@@ -64,7 +83,11 @@ final class RemoteNotificationController: NSObject, UNUserNotificationCenterDele
 
     func preferencesDidChange() {
         lowBatteryPolicy = LowBatteryAlertPolicy()
-        guard RemoteNotificationPreferences.anyEnabled else { return }
+        hudLowBatteryPolicy = LowBatteryAlertPolicy()
+        guard RemoteNotificationPreferences.anyEnabled else {
+            evaluateLowBattery(currentStatus)
+            return
+        }
         requestAuthorization { [weak self] granted in
             guard granted else { return }
             DispatchQueue.main.async {
@@ -90,9 +113,13 @@ final class RemoteNotificationController: NSObject, UNUserNotificationCenterDele
         for effect in effects {
             switch effect {
             case .notifyConnected:
-                guard RemoteNotificationPreferences.connectionEnabled else { continue }
                 var body = "Siri Remote is ready."
                 if let battery = status.batteryPercent { body += " Battery: \(battery)%." }
+                if RemoteNotificationPreferences.hudEnabled {
+                    let subtitle: String? = status.batteryPercent.map { "Battery: \($0)%" }
+                    hud?.present(kind: .connected, title: status.productName ?? "Siri Remote", subtitle: subtitle)
+                }
+                guard RemoteNotificationPreferences.connectionEnabled else { continue }
                 post(identifier: "remote.connection.connected", title: "Siri Remote Connected", body: body)
             case .scheduleDisconnect:
                 pendingDisconnect?.cancel()
@@ -110,6 +137,13 @@ final class RemoteNotificationController: NSObject, UNUserNotificationCenterDele
                 pendingDisconnect?.cancel()
                 pendingDisconnect = nil
             case .notifyDisconnected:
+                if RemoteNotificationPreferences.hudEnabled {
+                    hud?.present(
+                        kind: .disconnected,
+                        title: "Siri Remote Disconnected",
+                        subtitle: "Waiting for the remote to reconnect"
+                    )
+                }
                 guard RemoteNotificationPreferences.connectionEnabled else { continue }
                 post(
                     identifier: "remote.connection.disconnected",
@@ -121,17 +155,34 @@ final class RemoteNotificationController: NSObject, UNUserNotificationCenterDele
     }
 
     private func evaluateLowBattery(_ status: RemoteStatus) {
-        guard RemoteNotificationPreferences.lowBatteryEnabled,
-              status.isConnected,
-              let battery = status.batteryPercent else { return }
-
+        guard status.isConnected, let battery = status.batteryPercent else { return }
         let now = Date()
+        let threshold = RemoteNotificationPreferences.lowBatteryThreshold
+
+        if RemoteNotificationPreferences.hudEnabled {
+            let lastHUDDate = UserDefaults.standard.object(forKey: Self.hudLastLowBatteryKey) as? Date
+            if hudLowBatteryPolicy.shouldNotify(
+                percent: battery,
+                threshold: threshold,
+                now: now,
+                lastNotificationDate: lastHUDDate
+            ) {
+                hud?.present(
+                    kind: .lowBattery,
+                    title: "Siri Remote Battery Low",
+                    subtitle: "Battery is at \(battery)%"
+                )
+                UserDefaults.standard.set(now, forKey: Self.hudLastLowBatteryKey)
+            }
+        }
+
+        guard RemoteNotificationPreferences.lowBatteryEnabled else { return }
         let lastDate = UserDefaults.standard.object(
             forKey: Self.lastLowBatteryNotificationKey
         ) as? Date
         guard lowBatteryPolicy.shouldNotify(
             percent: battery,
-            threshold: RemoteNotificationPreferences.lowBatteryThreshold,
+            threshold: threshold,
             now: now,
             lastNotificationDate: lastDate
         ) else { return }
