@@ -189,6 +189,9 @@ class RemoteDetector {
             lastBatteryPercent = nil
             lastBatterySampleUptime = 0
             sessionProductName = nil
+            coreBluetoothLastAttemptAt = 0
+            batteryProbe.invalidateCache()
+            coreBluetoothBattery.invalidateCache()
         }
         devices[identifier] = device
 
@@ -275,8 +278,10 @@ class RemoteDetector {
                 } else {
                     // Do not update lastBatterySampleUptime on failure so a real
                     // change can still retry, but each fallback throttles itself.
-                    requestCoreBluetoothBattery()
-                    requestBluetoothBatteryProbe()
+                    // forceBatteryRead bypasses per-fallback cooldowns so a
+                    // sleep/wake session-restart gets a fresh read immediately.
+                    requestCoreBluetoothBattery(force: forceBatteryRead)
+                    requestBluetoothBatteryProbe(force: forceBatteryRead)
                 }
             }
             status = RemoteStatus(
@@ -294,10 +299,10 @@ class RemoteDetector {
         _ = eventCallback?(.statusChanged(status))
     }
 
-    private func requestBluetoothBatteryProbe() {
+    private func requestBluetoothBatteryProbe(force: Bool = false) {
         let identity = currentBluetoothIdentity()
         guard !identity.isEmpty else { return }
-        batteryProbe.readBatteryPercent(matching: identity) { [weak self] percent in
+        batteryProbe.readBatteryPercent(matching: identity, force: force) { [weak self] percent in
             DispatchQueue.main.async {
                 guard let self, self.interfaceRegistry.isConnected, let percent else { return }
                 self.lastBatteryPercent = percent
@@ -307,10 +312,10 @@ class RemoteDetector {
         }
     }
 
-    private func requestCoreBluetoothBattery() {
+    private func requestCoreBluetoothBattery(force: Bool = false) {
         let now = ProcessInfo.processInfo.systemUptime
         if coreBluetoothInFlight { return }
-        if now - coreBluetoothLastAttemptAt < coreBluetoothCooldown { return }
+        if !force, now - coreBluetoothLastAttemptAt < coreBluetoothCooldown { return }
 
         let identity = currentBluetoothIdentity()
         let hints = identity.nameHints + ["Siri Remote", "AppleTV Remote", "Apple TV Remote"]
@@ -320,7 +325,8 @@ class RemoteDetector {
         coreBluetoothLastAttemptAt = now
         coreBluetoothBattery.readBatteryPercent(
             nameHints: Array(Set(hints)),
-            knownIdentifier: lastKnownBluetoothPeripheralID
+            knownIdentifier: lastKnownBluetoothPeripheralID,
+            force: force
         ) { [weak self] percent in
             DispatchQueue.main.async {
                 guard let self else { return }

@@ -31,6 +31,17 @@ final class BluetoothBatteryProbe {
         self.cooldown = cooldown
     }
 
+    /// Reset cache and cooldown so the next read runs system_profiler again.
+    /// Called on a fresh HID session (e.g. after sleep/wake).
+    func invalidateCache() {
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            self.cachedPercent = nil
+            self.cachedAt = 0
+            self.lastAttemptAt = 0
+        }
+    }
+
     func readBatteryPercent(
         matching identity: BluetoothBatteryIdentity,
         force: Bool = false,

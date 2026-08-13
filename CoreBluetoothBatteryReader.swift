@@ -39,6 +39,17 @@ final class CoreBluetoothBatteryReader: NSObject, CBCentralManagerDelegate, CBPe
     /// Set after a successful read so `RemoteDetector` can persist and reuse it.
     var lastMatchedIdentifier: UUID? { lastResolvedIdentifier }
 
+    /// Drop the in-memory cache so the next read hits GATT even inside TTL.
+    /// Called on a fresh HID session (e.g. after sleep/wake) so a stale value
+    /// from before the disconnect is not returned instead of a fresh read.
+    func invalidateCache() {
+        workQueue.async { [weak self] in
+            guard let self else { return }
+            self.lastCachedPercent = nil
+            self.lastCachedAt = .distantPast
+        }
+    }
+
     init(cacheTTL: TimeInterval = 300) {
         self.cacheTTL = cacheTTL
         self.central = CBCentralManager(delegate: nil, queue: workQueue, options: [
@@ -51,13 +62,15 @@ final class CoreBluetoothBatteryReader: NSObject, CBCentralManagerDelegate, CBPe
     func readBatteryPercent(
         nameHints: [String],
         knownIdentifier: UUID?,
+        force: Bool = false,
         timeout: TimeInterval = 8,
         completion: @escaping (Int?) -> Void
     ) {
         workQueue.async { [weak self] in
             guard let self else { completion(nil); return }
 
-            if let cached = self.lastCachedPercent,
+            if !force,
+               let cached = self.lastCachedPercent,
                Date().timeIntervalSince(self.lastCachedAt) < self.cacheTTL {
                 completion(cached)
                 return
