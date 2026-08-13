@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CoreGraphics
 
 enum RemoteTrigger: String, Codable, CaseIterable {
     case single, double, hold, release
@@ -265,16 +266,33 @@ enum VoicePreferences {
         get { UserDefaults.standard.string(forKey: commandKey) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: commandKey) }
     }
+    /// Default dictation shortcut is Control + Option + Command + V. macOS
+    /// filters synthesised Fn/Fn events for privacy, so the built-in "Press Fn
+    /// twice" trigger cannot be posted from code — the user needs to pick a
+    /// standard shortcut both here and in System Settings → Keyboard →
+    /// Dictation, and this default gives a sensible starting point.
+    static let defaultDictationKeyCode = 9        // kVK_ANSI_V
+    static let defaultDictationFlags: UInt64 = UInt64(
+        CGEventFlags.maskControl.rawValue
+        | CGEventFlags.maskAlternate.rawValue
+        | CGEventFlags.maskCommand.rawValue
+    )
+    static let defaultDictationDisplay = "⌃⌥⌘V"
+
     static var dictationKeyCode: Int {
-        get { UserDefaults.standard.object(forKey: dictationKeyCodeKey) == nil ? 49 : UserDefaults.standard.integer(forKey: dictationKeyCodeKey) }
+        get { UserDefaults.standard.object(forKey: dictationKeyCodeKey) == nil ? defaultDictationKeyCode : UserDefaults.standard.integer(forKey: dictationKeyCodeKey) }
         set { UserDefaults.standard.set(newValue, forKey: dictationKeyCodeKey) }
     }
     static var dictationFlags: UInt64 {
-        get { UInt64(UserDefaults.standard.string(forKey: dictationFlagsKey) ?? "0", radix: 16) ?? 0 }
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: dictationFlagsKey),
+                  let value = UInt64(raw, radix: 16) else { return defaultDictationFlags }
+            return value
+        }
         set { UserDefaults.standard.set(String(newValue, radix: 16), forKey: dictationFlagsKey) }
     }
     static var dictationDisplay: String {
-        get { UserDefaults.standard.string(forKey: dictationDisplayKey) ?? "Space" }
+        get { UserDefaults.standard.string(forKey: dictationDisplayKey) ?? defaultDictationDisplay }
         set { UserDefaults.standard.set(newValue, forKey: dictationDisplayKey) }
     }
 }
