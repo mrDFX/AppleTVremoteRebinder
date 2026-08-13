@@ -1,100 +1,77 @@
-<img src="banner.png" alt="AppleTVremoteRebinder — a walkie-talkie for Claude Code">
+<img src="banner.png" alt="AppleTVremoteRebinder">
 
-# AppleTVremoteRebinder V0.1
+# AppleTVremoteRebinder
 
-One-handed vibe coding using Apple TV remote, customizable buttons and gestures.
+A native macOS menu-bar controller for the 1st-generation Siri Remote (A1513). It turns the remote into a configurable input for using a Mac as an HTPC / Apple-TV-style set-top box, with editable button profiles, trackpad tuning, media and app actions, and voice-input plumbing.
 
-Grab a remote, push to talk, and vibe-code with Claude Code without breaking flow.
+The product goal is to be at least as capable as Remote Buddy 2 for the Mac-as-Apple-TV use case, while keeping every mapping user-editable rather than hard-coded to a specific app.
 
-<img src="demo.gif" alt="AppleTVremoteRebinder demo" width="70%">
-
-Tested with the 1st-gen Siri Remote (Model A1513). Support for Xbox Adaptive Joystick coming soon.
-
-> **Experimental release.** For now, AppleTVremoteRebinder ships as an experiment — there is no pre-built binary. You'll have to build the app bundle yourself (see [Building](#building)). Your mileage may vary.
+> **Status.** No pre-built binary is shipped — build the app bundle yourself (see [Building](#building)). Tested on the 1st-gen Siri Remote (A1513). The 2nd-gen A2540 click-ring directions and dedicated Mute button are not mapped yet.
 
 ---
 
 ## Features
 
-### Buttons
+### Configurable button profiles
 
-Each physical Siri Remote button is independently assignable via the menu bar.
+Every physical button (Menu, TV, Siri/Microphone, Play/Pause, Volume +, Volume −) is independently assignable through a native AppKit Settings window. Each button can carry different actions for:
 
-<img src="siri-remote-button-mapping-default.png" alt="Default Siri Remote button mapping" width="50%">
+- **Press** — single click
+- **Double Press** — two clicks within the configurable window
+- **Hold** — button pressed and held
+- **Release** — matched release event, where the hardware exposes one
 
-<img src="screenshot-button-mapping.png" alt="Button Mappings menu screenshot" width="70%">
+Menu and TV do not emit a distinct release on this hardware path; their Hold behavior is inferred from repeat events. Push-to-talk actions therefore need Play/Pause, Volume +, Volume −, or Siri, which produce both press and release.
 
-**Default Button Mapping (Customizable):**
-- Menu → Esc
-- TV → Ctrl + C
-- Siri → Space (Claude voice dictation)
-- Play/Pause → Enter
-- Volume Up → Up arrow
-- Volume Down → Down arrow
+Multiple profiles are supported. Profiles are persisted in `UserDefaults` under a versioned schema (`remoteProfiles.v1`) with legacy migration, a recovery history, and fail-closed handling for corrupt or future payloads.
 
-| Action | Behavior |
-|---|---|
-| Play/pause button | Enter (submit prompt) |
-| Volume up button | Up arrow |
-| Volume down button | Down arrow |
-| Menu button | Esc (Navigate back) |
-| TV button | Control + C (cancel prompt) |
-| Trackpad click | Left mouse click |
-| Siri/mic button | Space on hold (Claude voice dictation must be enabled) |
+### Actions
 
-**Hold-Capable Buttons:** Push-to-talk actions require buttons that emit both press and release HID events. Only Play/Pause, Volume Up, Volume Down, and Siri buttons allow for both events. Also this button can trigger right command or option key for other dictation apps like [VoiceInk](https://github.com/Beingpax/VoiceInk).
+Generic action types available to every trigger:
 
+- **System volume** — up / down / mute, routed through the media-key event path so keyboard media keys still work normally
+- **Media transport** — play/pause / next / previous
+- **Keyboard shortcut** — arbitrary modifier combinations, including ones macOS steals during live capture (e.g. `⌘⌥Tab`), via a manual shortcut builder
+- **Launch / Activate application** — with an optional "if already running" branch
+- **Toggle Two Applications** — independent `launchIfNeeded` and `fullscreen` policies per side, so e.g. Kodi can be launched fullscreen while Chrome is only activated
+- **Open URL** and **Run Shell**
+- **Voice Input** — Start / Stop / Toggle (see [Voice](#voice))
 
-### Swipe Gestures
+The HTPC preset ships as a starting point that references Kodi and Google Chrome, but the paths are stored in the profile and remain user-editable; runtime behavior does not require any specific app to be installed.
 
-Four independently configurable single-finger swipe directions on the trackpad surface. Detection is velocity-gated: **distance ≥ 35%** of trackpad, **duration < 350 ms**, **dominant axis ≥ 2×** the other. Slow drags continue to move the cursor; only deliberate flicks trigger actions.
+Apple Music auto-launch suppression is opt-in and defaults **on**. It intercepts remote-origin AVRCP play events so Music/iTunes does not wake up when it is not the active target; regular keyboard media keys keep working.
 
-<img src="siri-remote-gesture-mapping.png" alt="Siri Remote swipe gesture mapping" width="50%">
+### Trackpad
 
-<img src="screenshot-swipe-mapping.png" alt="Swipe Gestures menu screenshot" width="70%">
+The Gen-1 touch surface is used as a pointer, with configurable:
 
-**Default Gesture Mapping (Customizable):**
-- Swipe Up → `/usage`
-- Swipe Down → `/compact`
-- Swipe Left → `/model`
-- Swipe Right → Mode Switching (Shift + Tab)
+- Sensitivity and motion smoothing
+- Tap-to-click, physical click, and drag thresholds
+- Click lock — freezes the pointer at the pre-press target so pressure-induced finger drift does not move the cursor off the button
+- Two-finger scroll, natural-scroll direction, scroll scale
+- Double-press / hold / long-press timings
 
-Assignable actions:
+Physical click begins on button-down and completes at the anchored cursor position on release; drag begins only after the drag threshold. The click session is generation-tokened so a stale drag timer cannot leak into the next click, and a mid-drag disconnect always emits the matching mouse-up.
 
-- **Arrow keys (direction-matched)**: "Left: Navigate Left" offered only on Swipe Left; "Right: Navigate Right" offered only on Swipe Right.
-- **Mode Switching (Shift + Tab)** — toggle between normal / plan / auto-accept modes in Claude Code.
-- **`ultrathink`** — inserts the keyword (with trailing space) into the prompt.
-- **Slash commands**: `/btw`, `/compact`, `/config`, `/context`, `/effort`, `/init`, `/model`, `/remote-control`, `/schedule`, `/tasks`, `/usage`.
-- **None**.
+### Remote status and battery
 
-**Trailing-space policy.** Commands that typically take an argument (`/btw`, `/schedule`, `ultrathink`) are typed with a trailing space so you can keep typing. Commands that stand alone or open an interactive picker (`/compact`, `/config`, `/context`, `/effort`, `/init`, `/model`, `/remote-control`, `/tasks`, `/usage`) are typed without a trailing space.
+The menu bar and **Settings → General** show live connection state, active HID interface count, and the Siri Remote battery percentage when macOS exposes it. Battery reads use standard HID battery usages first, with the driver's `BatteryPercent` IORegistry property as a compatibility fallback. When the A1513 firmware/macOS combination does not publish either value, the UI reports **Battery: Unavailable** instead of inventing a percentage.
 
-**Enter is never sent** — gestures type the command but leave Enter for the user, so the command can be reviewed, edited, or augmented with arguments.
+Connection/disconnection and low-battery notifications are independently configurable. Disconnect alerts wait briefly to absorb normal Bluetooth interface re-enumeration; low-battery alerts use hysteresis and a persisted cooldown to avoid repeated notifications.
 
-### Other Trackpad Inputs
+### Voice
 
-- **Cursor movement** via single-finger drag
-- **Two-finger scroll** (natural-scroll direction, configurable scale)
-- **Tap-to-click** on the trackpad surface
-- **Drag** by holding the trackpad click and moving
+The end-goal is push-to-talk voice input from the Siri Remote microphone into macOS/apps. Current code covers the action/preferences plumbing and an external bridge command; microphone packet capture and decoding is not yet an integrated feature.
 
-### Persistence
-
-Button mappings and swipe mappings are saved to UserDefaults (`buttonMappings`, `swipeMappings`) and survive restarts. Schema versioning handles future upgrades (`buttonMappingsSchema`).
+Configure the bridge and dictation/PTT shortcut under **Settings → Media & Voice**, then map **Voice Input — Start** to Microphone / Hold and **Voice Input — Stop** to Microphone / Release. The reverse-engineered `SiriRemoteVoiceControl` / PacketLogger path (or a replacement decoder) can feed a virtual audio input without hard-coding one decoder into the app.
 
 ### Safety
 
-- **Stuck-key prevention.** If the remote disconnects while a push-to-talk key is held, AppleTVremoteRebinder releases the virtual key automatically.
-- **Balanced physical clicks.** Disconnecting during a drag sends the matching mouse-up, and delayed drag timers cannot leak into the next click.
-- **Interface-safe reconnect.** The remote remains connected while any of its HID interfaces is still present; losing one interface no longer tears down the others.
+- **HID seize.** On connect, the remote is seized at the HID level so macOS does not also dispatch the same media-key events — no double action to Music/iTunes, no system funk sound on unhandled keys.
+- **Stuck-key prevention.** If the remote disconnects while a push-to-talk key is held, the virtual key is released automatically.
+- **Balanced physical clicks.** Disconnecting mid-drag posts the matching mouse-up, and delayed drag timers cannot leak into the next click.
+- **Interface-safe reconnect.** The remote is treated as connected while any of its HID interfaces is present; losing one interface no longer tears down the others.
 - **Stale-hold self-heal.** If a release HID event is ever missed, the next press closes the stale hold before opening a new one.
-- **HID seize.** On connect, AppleTVremoteRebinder seizes the remote at the HID level so macOS no longer also sees media key events from it — no double-dispatch (e.g., to iTunes/Music), no system funk sound on unhandled keys.
-
-### Remote Status and Battery
-
-The menu bar and **Settings → General** show live connection state, active HID interface count, and the Siri Remote battery percentage when macOS exposes it. Battery reads use standard HID battery usages first, with the driver's `BatteryPercent` IORegistry property as a compatibility fallback. If the A1513 firmware/macOS combination does not publish either value, the UI reports **Battery: Unavailable** instead of inventing a percentage.
-
-Connection/disconnection and low-battery notifications are independently configurable under **Settings → General**. Disconnect alerts wait briefly to absorb normal Bluetooth interface re-enumeration, while low-battery alerts use hysteresis and a persisted cooldown to avoid repeated notifications.
 
 ---
 
@@ -109,92 +86,80 @@ Connection/disconnection and low-battery notifications are independently configu
 
 ```bash
 ./build.sh
+./create_app_bundle.sh
 ```
 
-This runs a single `swiftc` invocation over all the project's Swift files, linking IOKit, CoreGraphics, AudioToolbox, Carbon, AppKit, and the private MultitouchSupport framework via a bridging header. No Xcode project is required.
+`build.sh` runs a single `swiftc` invocation over every source file, linking IOKit, CoreGraphics, AudioToolbox, Carbon, AppKit, UserNotifications, and the private MultitouchSupport framework via a bridging header. No Xcode project is required. The bundle is ad-hoc signed with hardened runtime and the entitlements from `AppleTVremoteRebinder.entitlements`.
 
-Profile persistence regression tests use an isolated `UserDefaults` suite and do not touch the app's saved settings:
+Native builds are verified on both `arm64` and `x86_64`.
+
+### Tests
+
+Regression tests use an isolated `UserDefaults` suite and do not touch saved settings:
 
 ```bash
-./run_profile_tests.sh
-./run_input_tests.sh
+./run_profile_tests.sh   # profile schema, migration, recovery, sequence quarantine
+./run_input_tests.sh     # HID interface registry, physical-click state machine, battery normalization, connection/low-battery alert policy
 ```
 
 ---
 
-## Installing and Running
+## Installing and running
 
 1. Build and bundle: `./build.sh && ./create_app_bundle.sh`
-2. Move `AppleTVremoteRebinder.app` to `/Applications` (optional but helps icon caching)
-3. Launch it (`open AppleTVremoteRebinder.app`)
+2. Move `AppleTVremoteRebinder.app` to `/Applications` (optional, helps icon caching)
+3. Launch: `open AppleTVremoteRebinder.app`
 4. Grant permissions in **System Settings → Privacy & Security**:
-   - **Accessibility** (for posting keyboard/mouse events)
-   - **Input Monitoring** (for reading HID events)
-   - **Bluetooth** (to communicate with the remote)
+   - **Accessibility** — for posting keyboard/mouse events
+   - **Input Monitoring** — for reading HID events (add the app explicitly with the **+** button)
+   - **Bluetooth** — to talk to the remote
 5. Pair the Siri Remote via **System Settings → Bluetooth** if it isn't already paired
-6. Use the menu-bar walkie-talkie glyph to access Button Mappings and Swipe Gestures
+6. Configure profiles from the menu-bar item → **Open Settings…**
 
-> ⚠️ **Important:** You must explicitly add **AppleTVremoteRebinder.app** to **System Settings → Privacy & Security → Input Monitoring** (click the **+** button and select the app). Without this, AppleTVremoteRebinder may not properly intercept HID events/media keys, which means vol up and down buttons and play/pause buttons will trigger volume change and triggering of Apple Music.
+Without Input Monitoring, HID and media-key interception cannot work — volume and play/pause buttons will pass through to the system and, for example, wake Music.
 
-A diagnostic log is written to `/tmp/appletvremoterebinder.log` (NSLog is redacted under hardened runtime, so AppleTVremoteRebinder uses file-based logging).
+A diagnostic log is written to `/tmp/appletvremoterebinder.log`. NSLog is redacted under hardened runtime, so file logging is used instead.
 
 ---
 
-### Why two paths for the same button?
+## How the input paths work
 
 A physical Siri Remote press can arrive two ways:
 
-1. **HID (seized)** — `RemoteInputHandler` reads raw HID input.
-2. **AVRCP → NX_SYSDEFINED** — Bluetooth media-key events `MediaKeyInterceptor` catches via an event tap.
+1. **HID (seized)** — `RemoteInputHandler` reads raw HID input from every interface of the paired remote.
+2. **AVRCP → NX_SYSDEFINED** — Bluetooth media-key events arrive via a `.cghidEventTap` at `.headInsertEventTap`, caught by `MediaKeyInterceptor` before the system dispatcher routes them to Music.
 
-Both paths converge on the same button mapping through a 200 ms debounce (static `lastProcessedButton`/`lastProcessedTime` on `RemoteInputHandler`), so a press fires the mapped action exactly once regardless of which path delivers it first.
+Both paths converge on the same mapping through a short debounce, so a press fires its mapped action exactly once regardless of which path delivered it first.
 
-### The NX_SYSDEFINED hack (media keys)
+### The NX_SYSDEFINED hack
 
-macOS has no public API for synthesizing or intercepting media keys (Play/Pause, Next, Previous, Volume, Mute). Both `MediaKeyInterceptor` and `MediaController` rely on the same undocumented `NSSystemDefined` event format used internally by the Human Interface Device stack:
+macOS has no public API for synthesizing or intercepting media keys. Both `MediaKeyInterceptor` and `MediaController` use the same undocumented `NSSystemDefined` event format the HID stack uses internally:
 
-- **Event type** `NX_SYSDEFINED` (raw value `14`) with **subtype `8`**.
-- **Key code and state packed into `data1`** as a bitfield: `(nxKeyCode << 16) | (keyState << 8)`, where `0xA` = key down and `0xB` = key up.
-- **Magic `modifierFlags`** (`0xa00` for down, `0xb00` for up) mirror the state nibble — real media key events arrive with these flags, and some consumers (e.g. Music.app) won't accept posted events without them.
+- **Event type** `NX_SYSDEFINED` (raw value `14`) with **subtype `8`**
+- **Key code and state packed into `data1`** as a bitfield: `(nxKeyCode << 16) | (keyState << 8)`, where `0xA` is key down and `0xB` is key up
+- **Magic `modifierFlags`** (`0xa00` for down, `0xb00` for up) mirror the state nibble. Real media-key events arrive with these flags, and some consumers (e.g. Music) refuse posted events without them.
 
-`MediaKeyInterceptor` installs a **`.cghidEventTap`** at `.headInsertEventTap` so it sees `NX_SYSDEFINED` events *before* the system dispatcher routes them to Music/iTunes/etc. — a session-level tap would arrive too late. It then manually unpacks `data1` to recover the key code and down/up state. The tap is automatically re-enabled on `tapDisabledByTimeout`, `tapDisabledByUserInput`, and `NSWorkspace.didWakeNotification`, because macOS silently disables event taps across sleep/wake and input stalls.
+`MediaController` fabricates matching `NSSystemDefined` events via `NSEvent.otherEvent(...)` and posts them to the session tap. A **`usleep(50_000)`** gap between down and up is required — without it macOS coalesces or drops the pair and the media key is ignored. The event tap is re-enabled on `tapDisabledByTimeout`, `tapDisabledByUserInput`, and `NSWorkspace.didWakeNotification`, because macOS silently disables event taps across sleep/wake and input stalls.
 
-`MediaController` goes the other way: it **fabricates** matching `NSSystemDefined` events via `NSEvent.otherEvent(...)` with the same magic flags, subtype, and `data1` packing, then posts the underlying `CGEvent` to the session tap. A **`usleep(50_000)`** gap between the down and up events is required — without the 50 ms pause, macOS coalesces or drops the pair and the media key is ignored.
-
-This is the standard reverse-engineered technique (originally surfaced in projects like SPMediaKeyTap and Noteify), but it is entirely undocumented and can change without notice in any macOS release.
+This is the standard reverse-engineered technique (surfaced in projects like SPMediaKeyTap and Noteify) and can change in any macOS release.
 
 ---
 
 ## Caveats
 
-- Uses Apple's **private `MultitouchSupport` framework** — not App Store compatible; Apple may change or remove this API in future macOS releases.
-- **NX_SYSDEFINED media-key synthesis and interception is undocumented** — relies on magic modifier-flag values (`0xa00`/`0xb00`), subtype `8`, and a manual `data1` bitfield layout. Apple could break this in any release.
-
-### Long-term direction: Xbox Adaptive Joystick
-
-Between the private `MultitouchSupport` framework and the undocumented `NX_SYSDEFINED` plumbing, the Siri Remote path is built on two proprietary, reverse-engineered interfaces that Apple can break at any time. AppleTVremoteRebinder may migrate its primary input to the **Xbox Adaptive Joystick**, which speaks standard USB HID / GameController.framework and avoids every proprietary hazard above. That gives a more permanent, App Store–viable foundation — and, as a bonus, a genuinely accessible input device — while the Siri Remote support remains as a best-effort path for users who already own one.
-- Tested on **Siri Remote 1st-gen (A1513, product ID `0x266`)**. Button HID codes are a superset likely to cover the 2nd-gen Siri Remote (A2540) as well, but its click-ring directional presses and dedicated Mute button are not yet mapped in `identifyButton`.
-- Ad-hoc signing ties TCC permission grants to the exact binary hash — rebuilds may require re-approval in System Settings.
+- Uses Apple's **private `MultitouchSupport` framework** — not App Store compatible; Apple can change or remove this API.
+- **`NX_SYSDEFINED` media-key synthesis and interception is undocumented** — relies on magic modifier-flag values, subtype `8`, and a manual `data1` bitfield layout. Apple can break it in any release.
+- Tested on **Siri Remote 1st-gen (A1513, product ID `0x266`)**. HID codes are a superset that should cover the 2nd-gen A2540 as well, but its click-ring directional presses and dedicated Mute button are not mapped yet.
+- Ad-hoc signing ties TCC permission grants to the exact binary hash — a rebuild may require re-approving Accessibility and Input Monitoring in System Settings.
 
 ---
 
 ## Credits
 
- **Fork & improvements.** AppleTVremoteRebinder is built on top of [Remotastic](https://github.com/lauschue/Remotastic) by [@lauschue](https://github.com/lauschue), which provided the foundational Siri-Remote HID handling, MultitouchSupport integration, and menu-bar scaffolding. AppleTVremoteRebinder extends it with configurable Claude Code workflows, keyboard shortcuts, push-to-talk and swipe gesture.
-- Icons from [The Noun Project](https://thenounproject.com/):
-  - [Arrow Up by Dayeong Kim](https://thenounproject.com/icon/arrow-up-6066125/)
-  - [Microphone by Alvida](https://thenounproject.com/icon/microphone-8162320/)
-  - [Radio by Kiran Shastry](https://thenounproject.com/icon/radio-2338991/)
-## TV-mode profiles and advanced input
+Built on top of [Remotastic](https://github.com/lauschue/Remotastic) by [@lauschue](https://github.com/lauschue), which provided the initial Siri-Remote HID handling, MultitouchSupport integration, and menu-bar scaffolding.
 
-AppleTVremoteRebinder includes a native Settings window with editable profiles. Each Siri Remote button can map Press, Double Press, Hold and (where macOS exposes it) Release independently. Actions include native media/system controls, arbitrary keyboard shortcuts, app launch/activation, per-app two-app toggles, URL/shell actions and voice-input control.
+UI icons from [The Noun Project](https://thenounproject.com/):
 
-The HTPC preset is only a starting point. Kodi and Google Chrome paths are stored in the profile and remain user-editable. Toggle Two Apps stores an independent `launch if needed` and `full screen` policy for each side, so Kodi can be launched fullscreen while Chrome is only activated.
-
-### Trackpad feel
-
-The Gen-1 touch surface uses smoothing, sensitivity controls and pointer-lock while the physical click is pending. Pointer lock prevents the small finger movement caused by pressing the glass from moving the cursor off the target. Drag starts only after the configurable drag threshold.
-
-### Siri Remote microphone
-
-Remote Buddy 2 does not expose the Siri Remote microphone. AppleTVremoteRebinder provides a first-class Voice Input action and a configurable external voice-bridge command so the reverse-engineered `SiriRemoteVoiceControl`/PacketLogger path (or a replacement decoder) can feed a virtual audio input without hard-coding one decoder into the application. Configure the bridge and dictation/PTT shortcut under **Settings → Media & Voice**, then map **Voice Input — Start** to Microphone/Hold and **Voice Input — Stop** to Microphone/Release.
+- [Arrow Up by Dayeong Kim](https://thenounproject.com/icon/arrow-up-6066125/)
+- [Microphone by Alvida](https://thenounproject.com/icon/microphone-8162320/)
+- [Radio by Kiran Shastry](https://thenounproject.com/icon/radio-2338991/)
